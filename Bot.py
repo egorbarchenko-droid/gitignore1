@@ -183,6 +183,7 @@ def save_order(data):
 def update_order(order_number, **kwargs):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    order_number = clean_order_number(order_number)
     for key, val in kwargs.items():
         try:
             c.execute(f"UPDATE orders SET {key} = ? WHERE order_number = ?", (val, order_number))
@@ -224,7 +225,7 @@ def get_all_orders():
     return rows
 
 def get_user_orders(user_id):
-    conn = sqlite3.connect(DB_path)
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT order_number, status_text, created_at, total_price, delivery_price, final_order, needed_parts FROM orders WHERE user_id = ? ORDER BY id DESC', (user_id,))
     rows = c.fetchall()
@@ -285,7 +286,7 @@ def get_bonus_history(user_id, limit=20):
     conn.close()
     return rows
 
-# ========== ГАРАЖ ==========
+# ========== ГАРАЖ (РАБОТА С БД) ==========
 def save_car(user_id, vin, description):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -350,31 +351,25 @@ def delivery_discount(order_sum):
     return min(100, ((order_sum - 10000) // 5000) * 5 + 5)
 
 def parse_products(text):
-    """Парсит строки вида: 'Масло Ravenol = 3500 руб' или 'Фильтр 500р'"""
     products = []
     for line in text.strip().split('\n'):
         line = line.strip()
         if not line:
             continue
-        
         match = re.search(r'(\d{1,3}(?:[\s\.]?\d{3})*)\s*(?:руб|₽|р\.|рублей)', line, re.I)
         if not match:
             continue
-            
         price_str = match.group(1).replace(' ', '').replace('.', '')
         try:
             price = float(price_str)
         except ValueError:
             continue
-            
         name = line[:match.start()].strip()
         name = re.sub(r'^[=\-•–—]+|[=\-•–—]+$', '', name).strip()
         name = re.sub(r'арт\.?\s*\S+', '', name).strip()
         name = name[:40] + ".." if len(name) > 40 else name
-        
         if name and price > 0:
             products.append({'name': name, 'price': price})
-    
     return products
 
 # ========== КЛАВИАТУРЫ ==========
@@ -466,7 +461,7 @@ async def garage_add_start(upd, ctx):
         "🚗 ДОБАВЛЕНИЕ АВТОМОБИЛЯ\n\n"
         "Шаг 1/2: Отправьте VIN номер автомобиля (17 символов):"
     )
-    return 11  # GARAGE_VIN
+    return 11
 
 async def garage_get_vin(upd, ctx):
     vin = upd.message.text.upper().strip()
@@ -480,7 +475,7 @@ async def garage_get_vin(upd, ctx):
         "Пример: BMW X5 3.0d, 2018, чёрный\n\n"
         "Или отправьте '-' чтобы пропустить:"
     )
-    return 12  # GARAGE_DESCRIPTION
+    return 12
 
 async def garage_get_description(upd, ctx):
     description = upd.message.text.strip()
@@ -548,7 +543,8 @@ async def new_order(upd, ctx):
         keyboard = [[InlineKeyboardButton("🆕 Ввести вручную", callback_data="order_manual")]]
         for car in cars:
             vin, desc, _ = car
-            keyboard.append([InlineKeyboardButton(f"🚗 {vin} ({desc[:20]})", callback_data=f"order_auto_{vin}")])
+            desc_short = desc[:20] if desc else ""
+            keyboard.append([InlineKeyboardButton(f"🚗 {vin} ({desc_short})", callback_data=f"order_auto_{vin}")])
         await upd.message.reply_text(
             "🔧 ВЫБЕРИТЕ АВТОМОБИЛЬ из гаража или введите VIN вручную:",
             reply_markup=InlineKeyboardMarkup(keyboard)
