@@ -140,7 +140,6 @@ def init_db():
     print(f"✅ База данных: {DB_PATH}")
     create_backup()
 
-# ========== ОСНОВНЫЕ ФУНКЦИИ ==========
 def save_order(data):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1239,7 +1238,7 @@ async def admin_callback(upd, ctx):
         order_num = data[14:]
         print(f"🔍 Удаляем заказ: {order_num}")
         
-        # Удаляем из БД
+        # УДАЛЯЕМ ИЗ БД
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('DELETE FROM orders WHERE order_number = ?', (order_num,))
@@ -1255,8 +1254,22 @@ async def admin_callback(upd, ctx):
             except:
                 pass
         
-        # Обновляем админ-панель
-        await admin_menu(upd, ctx, callback_query=q)
+        # ПОЛУЧАЕМ ОБНОВЛЁННЫЙ СПИСОК
+        orders = get_all_orders()
+        
+        # СОЗДАЁМ НОВУЮ КЛАВИАТУРУ
+        keyboard = []
+        for o in orders[:20]:
+            order_num2 = o[0]
+            user_name = o[1][:12] if len(o[1]) > 12 else o[1]
+            status_text = o[2] if len(o) > 2 else ''
+            icon = "🆕" if "Ожидает" in status_text else "📦"
+            keyboard.append([InlineKeyboardButton(f"{icon} {order_num2} | {user_name}", callback_data=f"admin_order_{order_num2}")])
+        keyboard.append([InlineKeyboardButton("➕ Тестовый заказ", callback_data="admin_fix")])
+        
+        # ОТПРАВЛЯЕМ НОВОЕ СООБЩЕНИЕ (НЕ РЕДАКТИРУЕМ СТАРОЕ)
+        await q.message.reply_text("👨‍💼 АДМИН ПАНЕЛЬ\n\nВыберите заказ:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await q.edit_message_text(f"✅ Заказ {order_num} УДАЛЁН!")
         return
     
     if data == "admin_back":
