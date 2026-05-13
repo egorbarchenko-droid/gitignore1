@@ -245,6 +245,18 @@ def add_bonus(user_id, order_num, amount, desc):
     conn.commit()
     conn.close()
 
+def refund_bonus(user_id, order_num, amount, desc):
+    """Возврат бонусов при удалении заказа"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE bonuses SET balance = balance - ?, total_earned = total_earned - ? WHERE user_id = ?',
+              (amount, amount, user_id))
+    c.execute('''INSERT INTO bonus_history (user_id, order_number, amount, type, description, created_at)
+                 VALUES (?,?,?,?,?,?)''',
+              (user_id, order_num, amount, 'refund', desc, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
 def get_bonus_percent(user_id):
     total = get_user_total(user_id)
     if total >= 900000: return 10
@@ -1149,7 +1161,7 @@ async def admin_callback(upd, ctx):
         await q.edit_message_text(text)
         return
     
-    # --- УДАЛИТЬ ЗАКАЗ ---
+    # --- УДАЛИТЬ ЗАКАЗ (запрос подтверждения) ---
     if data.startswith("delete_"):
         order_num = data[7:]
         order_num = clean_order_number(order_num)
@@ -1160,22 +1172,34 @@ async def admin_callback(upd, ctx):
         await q.edit_message_text(f"⚠️ Удалить заказ {order_num}?\n\nЭто действие нельзя отменить.", reply_markup=kb)
         return
     
-    # --- ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ ---
+    # --- ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ (С ВОЗВРАТОМ БОНУСОВ) ---
     if data.startswith("confirm_delete_"):
         order_num = data[14:]
         order_num = clean_order_number(order_num)
         print(f"🔍 Удаляем заказ: {order_num}")
         order = get_order(order_num)
+        
         if order:
+            # Получаем сумму бонусов, начисленных за этот заказ
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
+            c.execute('SELECT amount FROM bonus_history WHERE order_number = ? AND type = "earned"', (order_num,))
+            bonus_row = c.fetchone()
+            
+            # Удаляем заказ
             c.execute('DELETE FROM orders WHERE order_number = ?', (order_num,))
             conn.commit()
             conn.close()
-            try:
+            
+            # Возвращаем бонусы, если они были начислены
+            if bonus_row and bonus_row[0] > 0:
+                bonus_amount = bonus_row[0]
+                refund_bonus(order['user_id'], order_num, bonus_amount, f"Возврат бонусов при удалении заказа {order_num}")
+                print(f"💰 Возвращено бонусов: {bonus_amount}")
+                await ctx.bot.send_message(order['user_id'], text=f"🗑️ Заказ {order_num} удалён менеджером.\n\n💰 Бонусы в размере {int(bonus_amount)} руб. были списаны с вашего счета.")
+            else:
                 await ctx.bot.send_message(order['user_id'], text=f"🗑️ Заказ {order_num} удалён менеджером.")
-            except Exception as e:
-                print(f"Не удалось уведомить клиента: {e}")
+        
         await admin_menu(upd, ctx, q.message)
         return
 
