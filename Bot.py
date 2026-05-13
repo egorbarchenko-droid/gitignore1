@@ -58,7 +58,6 @@ def backup_db():
             backup_name = f"shop_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
             backup_path = os.path.join(BACKUP_DIR, backup_name)
             shutil.copy2(DB_PATH, backup_path)
-            # Удаляем старые бэкапы (старше 7 дней)
             for f in os.listdir(BACKUP_DIR):
                 f_path = os.path.join(BACKUP_DIR, f)
                 if os.path.isfile(f_path) and datetime.now().timestamp() - os.path.getmtime(f_path) > 7 * 24 * 3600:
@@ -77,7 +76,6 @@ def safe_str(val, default=''):
     return str(val) if val else default
 
 def wrap_text(text, max_length=25):
-    """Переносит длинный текст на новую строку"""
     if len(text) <= max_length:
         return text
     words = text.split()
@@ -227,8 +225,11 @@ def get_bonus(user_id):
     c.execute('SELECT balance, total_earned, total_spent FROM bonuses WHERE user_id = ?', (user_id,))
     r = c.fetchone()
     conn.close()
-    if r:
-        return {'balance': r[0] or 0, 'total_earned': r[1] or 0, 'total_spent': r[2] or 0}
+    if r and len(r) >= 3:
+        balance = float(r[0]) if r[0] is not None else 0
+        total_earned = float(r[1]) if r[1] is not None else 0
+        total_spent = float(r[2]) if r[2] is not None else 0
+        return {'balance': balance, 'total_earned': total_earned, 'total_spent': total_spent}
     return {'balance': 0, 'total_earned': 0, 'total_spent': 0}
 
 def add_bonus(user_id, order_num, amount, desc):
@@ -638,7 +639,6 @@ async def confirm_order(upd, ctx):
         })
         ctx.user_data.clear()
         
-        # Уведомление админу
         await upd.context.bot.send_message(
             MANAGER_ID,
             f"🆕 НОВЫЙ ЗАКАЗ #{order_num}\n\n👤 Клиент: {upd.effective_user.full_name}\n📞 Телефон: {data.get('phone','')}\n🚗 VIN: {data.get('vin','')}\n📊 Пробег: {data.get('mileage','')} км\n🏙️ Город: {data.get('city','')}\n🚚 Доставка: {data.get('delivery_type','')} | {data.get('delivery_price',500)} руб.\n📍 Адрес: {data.get('delivery_address','не указан')}\n🔧 Узел: {data.get('part_node','не указан')}\n📝 Запчасти:\n{data.get('needed_parts','')}\n\n➡️ Для подбора запчастей ответьте на это сообщение"
@@ -866,6 +866,10 @@ async def finalize_cb(upd, ctx):
             selected.append(products[idx])
             total += products[idx]['price']
     
+    if not selected:
+        await q.edit_message_text("❌ Вы не выбрали ни одной запчасти. Пожалуйста, выберите хотя бы одну позицию.")
+        return
+    
     delivery_disc = delivery_discount(total)
     delivery_price = order['delivery_price']
     if delivery_disc >= 100:
@@ -926,6 +930,9 @@ async def client_answer(upd, ctx):
     user_id = upd.effective_user.id
     if user_id == MANAGER_ID:
         return
+    if not upd.message.text or not upd.message.text.strip():
+        await upd.message.reply_text("❌ Пожалуйста, напишите ответ на вопрос менеджера.")
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT order_number FROM orders WHERE user_id = ? AND status = "waiting_answer" LIMIT 1', (user_id,))
@@ -937,7 +944,7 @@ async def client_answer(upd, ctx):
         await ctx.bot.send_message(MANAGER_ID, f"✅ Клиент ответил по заказу {order_num}\n\n📝 {upd.message.text}")
         await upd.message.reply_text("✅ Спасибо! Ваш ответ передан менеджеру.")
 
-# ========== АДМИН ПАНЕЛЬ (ПЕРЕПИСАНА) ==========
+# ========== АДМИН ПАНЕЛЬ ==========
 async def admin_menu(upd, ctx, message=None):
     if upd.effective_user.id != MANAGER_ID:
         if message:
@@ -976,12 +983,8 @@ async def admin_callback(upd, ctx):
     await q.answer()
     print(f"🔍 Callback: {data}")
     
-    # --- ОБРАБОТЧИКИ КНОПОК "НАЗАД" (В САМОМ НАЧАЛЕ) ---
-    if data in ["admin_back", "admin_dashboard"]:
-        await admin_menu(upd, ctx, q.message)
-        return
-    
-    if data == "admin_refresh":
+    # --- КНОПКИ "НАЗАД" И "ОБНОВИТЬ" ---
+    if data in ["admin_back", "admin_dashboard", "admin_refresh"]:
         await admin_menu(upd, ctx, q.message)
         return
     
