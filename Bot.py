@@ -356,6 +356,8 @@ def parse_products(text):
         price_str = match.group(1).replace(' ', '').replace('.', '')
         try:
             price = float(price_str)
+            if price <= 0:
+                continue
         except ValueError:
             continue
         name = line[:match.start()].strip()
@@ -466,6 +468,17 @@ async def garage_delete(upd, ctx):
     q = upd.callback_query
     await q.answer()
     vin = q.data[12:]
+    # Запрашиваем подтверждение
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ ДА, УДАЛИТЬ", callback_data=f"garage_confirm_del_{vin}")],
+        [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data="main_menu_back")]
+    ])
+    await q.edit_message_text(f"⚠️ Удалить автомобиль {vin} из гаража?\n\nЭто действие нельзя отменить.", reply_markup=kb)
+
+async def garage_confirm_delete(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    vin = q.data[18:]  # убираем "garage_confirm_del_"
     if delete_car(q.from_user.id, vin):
         await q.edit_message_text(f"✅ Автомобиль {vin} удалён из гаража!")
     else:
@@ -794,7 +807,9 @@ async def delivery_cmd(upd, ctx):
 
 async def help_cmd(upd, ctx):
     text = ("📖 ПОМОЩЬ\n\nОсновные команды:\n/start - Главное меню\n/my_orders - Мои заказы\n/bonus - Бонусы\n/referral - Рефералы\n/delivery - Доставка\n\n"
-            "👨‍💼 Администратор:\n/menu - Панель управления\n/fix - Тестовый заказ\n\n🚗 Мой гараж:\nХраните VIN и описание автомобилей\nБыстрый выбор при создании заказа\n\n❓ Вопросы:\nПо всем вопросам обращайтесь к менеджеру")
+            "👨‍💼 Администратор:\n/menu - Панель управления\n/fix - Тестовый заказ\n/resend - Повторно отправить подбор\n\n"
+            "🚗 Мой гараж:\nХраните VIN и описание автомобилей\nБыстрый выбор при создании заказа\n\n"
+            "❓ Вопросы:\nПо всем вопросам обращайтесь к менеджеру")
     await upd.message.reply_text(text, reply_markup=main_menu)
 
 # ========== МЕНЕДЖЕР (АДМИН) ==========
@@ -809,6 +824,13 @@ async def manager_reply(upd, ctx):
         await upd.message.reply_text("❌ Не удалось определить номер заказа.")
         return
     order_num = match.group(1)
+    
+    # Проверка существования заказа
+    order = get_order(order_num)
+    if not order:
+        await upd.message.reply_text(f"❌ Заказ {order_num} не найден в базе данных. Возможно, он был удалён.")
+        return
+    
     if not upd.message.text:
         await upd.message.reply_text("❌ Вы не ввели подбор запчастей.")
         return
@@ -818,10 +840,6 @@ async def manager_reply(upd, ctx):
         return
     total_cost = sum(p['price'] for p in products) * 0.7
     update_order(order_num, selected_products=upd.message.text, our_cost=total_cost, status='waiting_selection', status_text='🟡 Ожидает выбора')
-    order = get_order(order_num)
-    if not order:
-        await upd.message.reply_text(f"❌ Заказ {order_num} не найден!")
-        return
     
     kb = []
     for i, p in enumerate(products):
@@ -830,6 +848,38 @@ async def manager_reply(upd, ctx):
     kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
     await ctx.bot.send_message(order['user_id'], text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\nМенеджер подобрал для вас следующие позиции:\n\nВыберите нужные запчасти (можно отметить несколько):", reply_markup=InlineKeyboardMarkup(kb))
     await upd.message.reply_text(f"✅ Подбор запчастей для заказа {order_num} отправлен клиенту!")
+
+async def resend_selection(upd, ctx):
+    """Повторная отправка подбора запчастей (если клиент не ответил)"""
+    if upd.effective_user.id != MANAGER_ID:
+        await upd.message.reply_text("⛔ Доступ запрещён")
+        return
+    
+    args = ctx.args
+    if not args:
+        await upd.message.reply_text("📦 Использование: /resend RVN-XXXXXX")
+        return
+    
+    order_num = clean_order_number(args[0])
+    order = get_order(order_num)
+    if not order:
+        await upd.message.reply_text(f"❌ Заказ {order_num} не найден!")
+        return
+    
+    if not order.get('selected_products'):
+        await upd.message.reply_text(f"❌ Для заказа {order_num} ещё нет подбора запчастей.")
+        return
+    
+    products = parse_products(order['selected_products'])
+    if not products:
+        await upd.message.reply_text(f"❌ Не удалось распарсить подбор для заказа {order_num}.")
+        return
+    
+    kb = [[InlineKeyboardButton(f"⬜ {p['name'][:25]} — {int(p['price'])} руб.", callback_data=f"sel_{order_num}_{i}")] for i, p in enumerate(products)]
+    kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
+    
+    await ctx.bot.send_message(order['user_id'], text=f"🛒 ПОВТОРНЫЙ ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\nМенеджер повторно отправляет вам подбор:\n\nВыберите нужные запчасти (можно отметить несколько):", reply_markup=InlineKeyboardMarkup(kb))
+    await upd.message.reply_text(f"✅ Подбор для заказа {order_num} отправлен повторно!")
 
 async def select_cb(upd, ctx):
     q = upd.callback_query
@@ -1237,9 +1287,15 @@ async def fix_orders(upd, ctx):
 
 async def set_commands(application):
     await application.bot.set_my_commands([
-        ("start", "Главное меню"), ("my_orders", "Мои заказы"), ("bonus", "Бонусы"),
-        ("referral", "Рефералы"), ("delivery", "Доставка"), ("help", "Помощь"),
-        ("menu", "Панель управления"), ("fix", "Тестовый заказ"),
+        ("start", "Главное меню"),
+        ("my_orders", "Мои заказы"),
+        ("bonus", "Бонусы"),
+        ("referral", "Рефералы"),
+        ("delivery", "Доставка"),
+        ("help", "Помощь"),
+        ("menu", "Панель управления"),
+        ("fix", "Тестовый заказ"),
+        ("resend", "Повторно отправить подбор"),
     ])
 
 # ========== ЗАПУСК ==========
@@ -1289,6 +1345,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", admin_menu))
     app.add_handler(CommandHandler("fix", fix_orders))
+    app.add_handler(CommandHandler("resend", resend_selection))
     
     app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
     app.add_handler(MessageHandler(filters.Regex("^(📦 Мои заказы)$"), my_orders))
@@ -1309,6 +1366,7 @@ def main():
     app.add_handler(CallbackQueryHandler(back_orders_list, pattern="^back_orders_list$"))
     app.add_handler(CallbackQueryHandler(main_menu_back, pattern="^main_menu_back$"))
     app.add_handler(CallbackQueryHandler(garage_delete, pattern="^garage_del_"))
+    app.add_handler(CallbackQueryHandler(garage_confirm_delete, pattern="^garage_confirm_del_"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     app.add_handler(CallbackQueryHandler(ask_client, pattern="^ask_"))
     
