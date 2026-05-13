@@ -18,7 +18,6 @@ from telegram.warnings import PTBUserWarning
 
 # Подавление предупреждений
 warnings.filterwarnings("ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
-warnings.filterwarnings("ignore", message=r".*per_*", category=PTBUserWarning)
 
 # Настройка логов
 logging.basicConfig(level=logging.INFO)
@@ -52,13 +51,20 @@ AXLE_REQUIRED_NODES = [
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def clean_order_number(order_num):
+    """Очищает номер заказа от лишних символов, например, '_' в начале."""
     if not order_num:
         return ""
+    # Убираем подчеркивание в начале
     if order_num.startswith('_'):
         order_num = order_num[1:]
+    # Оставляем только формат RVN-......
+    match = re.search(r'(RVN-\w+)', order_num)
+    if match:
+        return match.group(1)
     return order_num
 
 def backup_db():
+    """Создает резервную копию базы данных."""
     try:
         if os.path.exists(DB_PATH):
             backup_name = f"shop_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
@@ -82,6 +88,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
+    # Таблица заказов
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         order_number TEXT UNIQUE,
@@ -110,6 +117,7 @@ def init_db():
         created_at TEXT
     )''')
     
+    # Таблица гаража
     c.execute('''CREATE TABLE IF NOT EXISTS garage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -125,6 +133,7 @@ def init_db():
         except:
             pass
     
+    # Таблица бонусов
     c.execute('''CREATE TABLE IF NOT EXISTS bonuses (
         user_id INTEGER PRIMARY KEY,
         balance REAL DEFAULT 0,
@@ -211,6 +220,7 @@ def get_order(order_number):
     for i, col in enumerate(columns):
         order[col] = row[i] if i < len(row) else None
     
+    # Приводим числовые поля к int
     for num_field in ['distance', 'delivery_price', 'total_price', 'our_cost', 'user_id']:
         order[num_field] = safe_int(order.get(num_field))
     
@@ -437,7 +447,7 @@ async def garage_menu(upd, ctx):
             "или нажмите кнопку ниже.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")],
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back")]
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")]
             ])
         )
         return
@@ -450,7 +460,7 @@ async def garage_menu(upd, ctx):
         text += f"🔹 {vin}\n   📝 {desc}\n   📅 Добавлен: {created[:10]}\n\n"
         keyboard.append([InlineKeyboardButton(f"🗑️ Удалить {vin}", callback_data=f"garage_del_{vin}")])
     keyboard.append([InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")])
     
     await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -503,11 +513,6 @@ async def garage_delete(upd, ctx):
     else:
         await q.edit_message_text(f"❌ Автомобиль {vin} не найден в гараже.")
     await garage_menu(upd, ctx)
-
-async def garage_back(upd, ctx):
-    q = upd.callback_query
-    await q.answer()
-    await start(upd, ctx)
 
 # ========== ОСНОВНЫЕ КОМАНДЫ КЛИЕНТА ==========
 async def start(upd, ctx):
@@ -777,7 +782,7 @@ async def my_orders(upd, ctx):
         text += f"{icon} {order_num} — {created[:10]} — {total} руб.\n"
         kb.append([InlineKeyboardButton(f"🔍 Заказ {order_num}", callback_data=f"view_{order_num}")])
     
-    kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
+    kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")])
     await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def view_order(upd, ctx):
@@ -822,14 +827,14 @@ async def view_order(upd, ctx):
     elif order.get('needed_parts'):
         text += f"\n\n📝 ИЗНАЧАЛЬНЫЙ ЗАПРОС:\n{order.get('needed_parts', 'не указан')[:500]}"
     
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders")]]))
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")]]))
 
-async def back_orders(upd, ctx):
+async def back_orders_list(upd, ctx):
     q = upd.callback_query
     await q.answer()
     await my_orders(upd, ctx)
 
-async def back_to_menu(upd, ctx):
+async def main_menu_back(upd, ctx):
     q = upd.callback_query
     await q.answer()
     await start(upd, ctx)
@@ -1184,9 +1189,14 @@ async def admin_menu(upd, ctx, message=None):
 
 async def admin_callback(upd, ctx):
     q = upd.callback_query
-    await q.answer()
     data = q.data
-    print(f"🔍 Callback: {data}")
+    
+    # Пропускаем callback, которые не относятся к админ-панели
+    if not data.startswith(('admin_', 'pay_', 'ship_', 'del_', 'edit_delivery_', 'set_delivery_', 'ask_', 'detail_', 'delete_', 'confirm_delete_')):
+        return
+    
+    await q.answer()
+    print(f"🔍 Админ callback: {data}")
     
     # 1. НАВИГАЦИЯ
     if data in ["admin_refresh", "admin_dashboard"]:
@@ -1361,6 +1371,7 @@ async def admin_callback(upd, ctx):
     # 12. УДАЛИТЬ ЗАКАЗ (запрос подтверждения)
     if data.startswith("delete_"):
         order_num = data[7:]
+        order_num = clean_order_number(order_num)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ ДА, УДАЛИТЬ", callback_data=f"confirm_delete_{order_num}")],
             [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data=f"admin_order_{order_num}")]
@@ -1371,7 +1382,9 @@ async def admin_callback(upd, ctx):
     # 13. ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ
     if data.startswith("confirm_delete_"):
         order_num = data[14:]
+        order_num = clean_order_number(order_num)
         print(f"🔍 Удаляем заказ: {order_num}")
+        
         order = get_order(order_num)
         
         if order:
@@ -1380,12 +1393,14 @@ async def admin_callback(upd, ctx):
             c.execute('DELETE FROM orders WHERE order_number = ?', (order_num,))
             conn.commit()
             conn.close()
+            print(f"✅ Заказ {order_num} удалён из БД")
+            
             try:
                 await ctx.bot.send_message(order['user_id'], text=f"🗑️ Заказ {order_num} удалён менеджером.")
             except Exception as e:
                 print(f"Не удалось уведомить клиента: {e}")
         
-        await q.edit_message_text(f"✅ Заказ {order_num} УДАЛЁН!")
+        # Показываем обновлённую админ-панель
         await admin_menu(upd, ctx, q.message)
         return
 
@@ -1447,7 +1462,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.post_init = set_commands
     
-    # Основной ConversationHandler для заказа
+    # ConversationHandler для заказа
     order_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^(🛒 Новый заказ)$"), new_order)],
         states={
@@ -1476,6 +1491,7 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(order_conv)
     app.add_handler(garage_conv)
@@ -1487,6 +1503,7 @@ def main():
     app.add_handler(CommandHandler("menu", admin_menu))
     app.add_handler(CommandHandler("fix", fix_orders))
     
+    # Кнопки меню
     app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
     app.add_handler(MessageHandler(filters.Regex("^(📦 Мои заказы)$"), my_orders))
     app.add_handler(MessageHandler(filters.Regex("^(🎁 Бонусы)$"), bonus_cmd))
@@ -1494,20 +1511,21 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^(🚚 Доставка)$"), delivery_cmd))
     app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     
+    # Админ-обработчики
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_reply))
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), track_input))
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), send_question_to_client))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, client_answer))
     
+    # Callback-обработчики (порядок ВАЖЕН!)
     app.add_handler(CallbackQueryHandler(select_cb, pattern="^sel_"))
     app.add_handler(CallbackQueryHandler(finalize_cb, pattern="^fin_"))
     app.add_handler(CallbackQueryHandler(view_order, pattern="^view_"))
-    app.add_handler(CallbackQueryHandler(back_orders, pattern="^back_orders$"))
-    app.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
+    app.add_handler(CallbackQueryHandler(back_orders_list, pattern="^back_orders_list$"))
+    app.add_handler(CallbackQueryHandler(main_menu_back, pattern="^main_menu_back$"))
+    app.add_handler(CallbackQueryHandler(garage_delete, pattern="^garage_del_"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     app.add_handler(CallbackQueryHandler(ask_client, pattern="^ask_"))
-    app.add_handler(CallbackQueryHandler(garage_delete, pattern="^garage_del_"))
-    app.add_handler(CallbackQueryHandler(garage_back, pattern="^garage_back$"))
     
     print("🤖 БОТ ЗАПУЩЕН!")
     print(f"👨‍💼 Админ ID: {MANAGER_ID}")
