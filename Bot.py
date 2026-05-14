@@ -39,6 +39,10 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # Состояния для ConversationHandler
 VIN, MILEAGE, STYLE_CITY, STYLE_HIGHWAY, DELIVERY_TYPE, ADDRESS, PHONE, PART_NODE, AXLE, PARTS, CONFIRM = range(11)
+# Состояния для гаража
+GARAGE_VIN, GARAGE_DESCRIPTION = range(11, 13)
+# Состояние для списания бонусов
+SPEND_BONUS = 13
 
 # Узлы, для которых нужна информация об оси
 AXLE_REQUIRED_NODES = ["🔧 Подвеска", "🛑 Тормозная система", "🛞 Рулевое управление"]
@@ -219,6 +223,26 @@ def format_bonus_history_grouped(history):
         result += "\n"
     
     return result
+
+# ========== ФУНКЦИИ БОНУСОВ ==========
+def use_bonus(user_id, order_num, amount, desc):
+    """Списание бонусов при оплате заказа"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Проверяем, достаточно ли бонусов
+    c.execute('SELECT balance FROM bonuses WHERE user_id = ?', (user_id,))
+    balance = c.fetchone()
+    if balance and balance[0] >= amount:
+        c.execute('UPDATE bonuses SET balance = balance - ?, total_spent = total_spent + ? WHERE user_id = ?',
+                  (amount, amount, user_id))
+        c.execute('''INSERT INTO bonus_history (user_id, order_number, amount, type, description, created_at)
+                     VALUES (?,?,?,?,?,?)''',
+                  (user_id, order_num, amount, 'spent', desc, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        return True
+    conn.close()
+    return False
 
 # ========== БАЗА ДАННЫХ ==========
 def init_db():
@@ -839,6 +863,8 @@ async def view_order(upd, ctx):
         return
     
     total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+    status = order.get('status', '')
+    
     text = (f"📋 ЗАКАЗ {order.get('order_number', '')}\n\n"
             f"👤 {order.get('user_name', '')}\n📅 {order.get('created_at', '')}\n"
             f"🚗 VIN: {order.get('vin', 'не указан')}\n📊 Пробег: {order.get('mileage', 'не указан')} км\n"
@@ -867,7 +893,20 @@ async def view_order(upd, ctx):
     elif order.get('needed_parts'):
         text += f"\n\n📝 ИЗНАЧАЛЬНЫЙ ЗАПРОС:\n{order.get('needed_parts', 'не указан')[:500]}"
     
-    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")]]))
+    # Кнопка для списания бонусов (только для заказов в статусе "Ожидает оплаты")
+    if status == 'confirmed':
+        bonus_data = get_bonus(order['user_id'])
+        if bonus_data['balance'] > 0:
+            kb = [
+                [InlineKeyboardButton("🎁 Списать бонусы", callback_data=f"apply_bonus_{order_num}")],
+                [InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")]
+            ]
+        else:
+            kb = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")]]
+    else:
+        kb = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")]]
+    
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def back_orders_list(upd, ctx):
     q = upd.callback_query
@@ -878,6 +917,149 @@ async def main_menu_back(upd, ctx):
     q = upd.callback_query
     await q.answer()
     await start(upd, ctx)
+
+async def apply_bonus_callback(upd, ctx):
+    """Применение бонусов к заказу"""
+    q = upd.callback_query
+    await q.answer()
+    order_num = q.data[12:]  # убираем "apply_bonus_"
+    uid = q.from_user.id
+    
+    order = get_order(order_num)
+    if not order:
+        await q.edit_message_text("❌ Заказ не найден")
+        return
+    
+    if order.get('status') != 'confirmed':
+        await q.edit_message_text("❌ Бонусы можно применить только к неподтверждённому заказу")
+        return
+    
+    bonus_data = get_bonus(uid)
+    balance = bonus_data['balance']
+    total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+    
+    if balance <= 0:
+        await q.edit_message_text("❌ У вас нет бонусов для списания")
+        return
+    
+    # Предлагаем списать бонусы
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"✅ Списать все ({int(balance)} руб.)", callback_data=f"spend_all_bonus_{order_num}")],
+        [InlineKeyboardButton("✏️ Ввести сумму", callback_data=f"spend_custom_bonus_{order_num}")],
+        [InlineKeyboardButton("◀️ Назад", callback_data=f"view_{order_num}")]
+    ])
+    
+    await q.edit_message_text(
+        f"🎁 **СПИСАНИЕ БОНУСОВ**\n\n"
+        f"📦 Заказ: {order_num}\n"
+        f"💰 Сумма заказа: {total_sum} руб.\n"
+        f"🎁 Доступно бонусов: {int(balance)} руб.\n\n"
+        f"Бонусы можно списать в размере до 100% суммы заказа.\n\n"
+        f"Выберите действие:",
+        reply_markup=kb,
+        parse_mode='Markdown'
+    )
+
+async def spend_all_bonus_callback(upd, ctx):
+    """Списать все доступные бонусы"""
+    q = upd.callback_query
+    await q.answer()
+    order_num = q.data[16:]  # убираем "spend_all_bonus_"
+    uid = q.from_user.id
+    
+    order = get_order(order_num)
+    if not order:
+        await q.edit_message_text("❌ Заказ не найден")
+        return
+    
+    total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+    bonus_data = get_bonus(uid)
+    balance = bonus_data['balance']
+    
+    spend_amount = min(int(balance), int(total_sum))
+    
+    if spend_amount <= 0:
+        await q.edit_message_text("❌ Недостаточно бонусов для списания")
+        return
+    
+    # Списываем бонусы
+    if use_bonus(uid, order_num, spend_amount, f"Списание бонусов по заказу {order_num}"):
+        # Обновляем сумму заказа
+        new_total = total_sum - spend_amount
+        update_order(order_num, total_price=order.get('total_price', 0) - spend_amount)
+        
+        await q.edit_message_text(
+            f"✅ **БОНУСЫ СПИСАНЫ!**\n\n"
+            f"📦 Заказ: {order_num}\n"
+            f"🎁 Списано: {spend_amount} руб.\n"
+            f"💰 Сумма к оплате: {new_total} руб.\n\n"
+            f"Остаток бонусов: {int(balance - spend_amount)} руб.",
+            parse_mode='Markdown'
+        )
+    else:
+        await q.edit_message_text("❌ Ошибка при списании бонусов")
+
+async def spend_custom_bonus_callback(upd, ctx):
+    """Списать определённую сумму бонусов"""
+    q = upd.callback_query
+    await q.answer()
+    order_num = q.data[18:]  # убираем "spend_custom_bonus_"
+    ctx.user_data['bonus_order'] = order_num
+    await q.edit_message_text("✏️ Введите сумму бонусов для списания (целое число):")
+    return SPEND_BONUS
+
+async def spend_custom_bonus_input(upd, ctx):
+    """Обработка ввода суммы для списания"""
+    user_id = upd.effective_user.id
+    order_num = ctx.user_data.get('bonus_order')
+    
+    if not order_num:
+        await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+        return ConversationHandler.END
+    
+    try:
+        amount = int(upd.message.text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await upd.message.reply_text("❌ Введите целое положительное число.")
+        return SPEND_BONUS
+    
+    order = get_order(order_num)
+    if not order:
+        await upd.message.reply_text("❌ Заказ не найден")
+        return ConversationHandler.END
+    
+    total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+    bonus_data = get_bonus(user_id)
+    balance = bonus_data['balance']
+    
+    if amount > balance:
+        await upd.message.reply_text(f"❌ У вас только {int(balance)} бонусов. Попробуйте снова.")
+        return SPEND_BONUS
+    
+    if amount > total_sum:
+        await upd.message.reply_text(f"❌ Сумма списания не может превышать сумму заказа ({total_sum} руб.).")
+        return SPEND_BONUS
+    
+    # Списываем бонусы
+    if use_bonus(user_id, order_num, amount, f"Списание бонусов по заказу {order_num}"):
+        new_total = total_sum - amount
+        update_order(order_num, total_price=order.get('total_price', 0) - amount)
+        
+        await upd.message.reply_text(
+            f"✅ **БОНУСЫ СПИСАНЫ!**\n\n"
+            f"📦 Заказ: {order_num}\n"
+            f"🎁 Списано: {amount} руб.\n"
+            f"💰 Сумма к оплате: {new_total} руб.\n\n"
+            f"Остаток бонусов: {int(balance - amount)} руб.",
+            parse_mode='Markdown'
+        )
+    else:
+        await upd.message.reply_text("❌ Ошибка при списании бонусов")
+    
+    del ctx.user_data['bonus_order']
+    return ConversationHandler.END
 
 async def bonus_cmd(upd, ctx):
     uid = upd.effective_user.id
@@ -1332,10 +1514,19 @@ async def admin_callback(upd, ctx):
     # --- ОПЛАЧЕН ---
     if data.startswith("pay_"):
         order_num = data[4:]
-        update_order(order_num, status='paid', status_text='💰 Оплачен')
         order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} оплачен!")
+        if not order:
+            await q.edit_message_text("❌ Заказ не найден")
+            return
+        
+        update_order(order_num, status='paid', status_text='💰 Оплачен')
+        
+        await ctx.bot.send_message(
+            order['user_id'],
+            text=f"✅ Заказ {order_num} оплачен!\n\n"
+                 f"💰 Сумма: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб.\n\n"
+                 f"Спасибо за покупку!"
+        )
         await q.edit_message_text(q.message.text + "\n\n✅ **СТАТУС: ОПЛАЧЕН**", parse_mode='Markdown')
         return
     
@@ -1570,10 +1761,18 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
+    # ConversationHandler для списания бонусов
+    spend_bonus_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(spend_custom_bonus_callback, pattern="^spend_custom_bonus_")],
+        states={SPEND_BONUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, spend_custom_bonus_input)]},
+        fallbacks=[CommandHandler("cancel", start)],
+    )
+    
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(order_conv)
     app.add_handler(garage_conv)
+    app.add_handler(spend_bonus_conv)
     app.add_handler(CommandHandler("my_orders", my_orders))
     app.add_handler(CommandHandler("bonus", bonus_cmd))
     app.add_handler(CommandHandler("referral", referral_cmd))
@@ -1604,6 +1803,8 @@ def main():
     app.add_handler(CallbackQueryHandler(back_orders_list, pattern="^back_orders_list$"))
     app.add_handler(CallbackQueryHandler(main_menu_back, pattern="^main_menu_back$"))
     app.add_handler(CallbackQueryHandler(bonus_callback, pattern="^bonus_"))
+    app.add_handler(CallbackQueryHandler(apply_bonus_callback, pattern="^apply_bonus_"))
+    app.add_handler(CallbackQueryHandler(spend_all_bonus_callback, pattern="^spend_all_bonus_"))
     app.add_handler(CallbackQueryHandler(garage_delete, pattern="^garage_del_"))
     app.add_handler(CallbackQueryHandler(garage_confirm_delete, pattern="^garage_confirm_del_"))
     app.add_handler(CallbackQueryHandler(admin_callback))
