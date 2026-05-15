@@ -43,6 +43,10 @@ VIN, MILEAGE, STYLE_CITY, STYLE_HIGHWAY, DELIVERY_TYPE, ADDRESS, PHONE, PART_NOD
 GARAGE_VIN, GARAGE_DESCRIPTION = range(11, 13)
 # Состояние для списания бонусов
 SPEND_BONUS = 13
+# Состояние для комментария к авто
+GARAGE_COMMENT = 14
+# Состояние для сохранения VIN после заказа
+SAVE_VIN_COMMENT = 15
 
 # Узлы, для которых нужна информация об оси
 AXLE_REQUIRED_NODES = ["🔧 Подвеска", "🛑 Тормозная система", "🛞 Рулевое управление"]
@@ -263,7 +267,7 @@ def init_db():
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS garage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER, vin TEXT, description TEXT, created_at TEXT,
+        user_id INTEGER, vin TEXT, description TEXT, comment TEXT, created_at TEXT,
         UNIQUE(user_id, vin)
     )''')
     for col in ['phone', 'our_cost', 'tracking_number', 'final_order']:
@@ -271,6 +275,12 @@ def init_db():
             c.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
         except:
             pass
+    # Добавляем колонку comment в garage
+    try:
+        c.execute('ALTER TABLE garage ADD COLUMN comment TEXT')
+    except:
+        pass
+    
     c.execute('''CREATE TABLE IF NOT EXISTS bonuses (
         user_id INTEGER PRIMARY KEY,
         balance REAL DEFAULT 0, total_earned REAL DEFAULT 0,
@@ -420,15 +430,15 @@ def get_bonus_percent(user_id):
     return 1
 
 # ========== ГАРАЖ (РАБОТА С БД) ==========
-def save_car(user_id, vin, description):
+def save_car(user_id, vin, description, comment=""):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT 1 FROM garage WHERE user_id = ? AND vin = ?', (user_id, vin))
     if c.fetchone():
         conn.close()
         return False
-    c.execute('INSERT INTO garage (user_id, vin, description, created_at) VALUES (?,?,?,?)',
-              (user_id, vin, description, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    c.execute('INSERT INTO garage (user_id, vin, description, comment, created_at) VALUES (?,?,?,?,?)',
+              (user_id, vin, description, comment, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
     conn.close()
     return True
@@ -436,7 +446,7 @@ def save_car(user_id, vin, description):
 def get_cars(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT vin, description, created_at FROM garage WHERE user_id = ? ORDER BY id DESC', (user_id,))
+    c.execute('SELECT vin, description, comment, created_at FROM garage WHERE user_id = ? ORDER BY id DESC', (user_id,))
     rows = c.fetchall()
     conn.close()
     return rows
@@ -445,6 +455,15 @@ def delete_car(user_id, vin):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('DELETE FROM garage WHERE user_id = ? AND vin = ?', (user_id, vin))
+    conn.commit()
+    conn.close()
+    return c.rowcount > 0
+
+def update_car_comment(user_id, vin, comment):
+    """Обновляет комментарий к автомобилю"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE garage SET comment = ? WHERE user_id = ? AND vin = ?', (comment, user_id, vin))
     conn.commit()
     conn.close()
     return c.rowcount > 0
@@ -557,7 +576,7 @@ async def garage_menu(upd, ctx):
             "🚗 МОЙ ГАРАЖ\n\nУ вас пока нет добавленных автомобилей.\n\n➕ Добавить автомобиль:\nПросто отправьте мне VIN номер (17 символов) или нажмите кнопку ниже.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")],
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")]
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back_to_menu")]
             ])
         )
         return
@@ -565,28 +584,35 @@ async def garage_menu(upd, ctx):
     text = "🚗 МОЙ ГАРАЖ\n\n"
     keyboard = []
     for car in cars:
-        vin, description, created = car
+        vin, description, comment, created = car
         desc = description if description else "Описание не указано"
-        text += f"🔹 {vin}\n   📝 {desc}\n   📅 Добавлен: {created[:10]}\n\n"
-        keyboard.append([InlineKeyboardButton(f"🗑️ Удалить {vin}", callback_data=f"garage_del_{vin}")])
+        text += f"🔹 **{vin}**\n"
+        text += f"   📝 {desc}\n"
+        if comment:
+            text += f"   💬 *{comment}*\n"
+        text += f"   📅 Добавлен: {created[:10]}\n\n"
+        
+        keyboard.append([InlineKeyboardButton(f"✏️ Комментарий", callback_data=f"garage_comment_{vin}")])
+        keyboard.append([InlineKeyboardButton(f"🗑️ Удалить", callback_data=f"garage_del_{vin}")])
     keyboard.append([InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")])
-    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back_to_menu")])
+    
+    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def garage_add_start(upd, ctx):
     q = upd.callback_query
     await q.answer()
     await q.edit_message_text("🚗 ДОБАВЛЕНИЕ АВТОМОБИЛЯ\n\nШаг 1/2: Отправьте VIN номер автомобиля (17 символов):")
-    return 11
+    return GARAGE_VIN
 
 async def garage_get_vin(upd, ctx):
     vin = upd.message.text.upper().strip()
     if len(vin) != 17 or not vin.isalnum():
         await upd.message.reply_text("❌ VIN должен быть 17 символов. Попробуйте ещё раз:")
-        return 11
+        return GARAGE_VIN
     ctx.user_data['new_car_vin'] = vin
     await upd.message.reply_text(f"🚗 VIN: {vin}\n\nШаг 2/2: Введите описание автомобиля\n\nПример: BMW X5 3.0d, 2018, чёрный\n\nИли отправьте '-' чтобы пропустить:")
-    return 12
+    return GARAGE_DESCRIPTION
 
 async def garage_get_description(upd, ctx):
     description = upd.message.text.strip()
@@ -596,7 +622,7 @@ async def garage_get_description(upd, ctx):
     if not vin:
         await upd.message.reply_text("❌ Ошибка. Начните добавление заново.")
         return ConversationHandler.END
-    if save_car(upd.effective_user.id, vin, description):
+    if save_car(upd.effective_user.id, vin, description, ""):
         await upd.message.reply_text(f"✅ Автомобиль {vin} успешно добавлен в ваш гараж!")
     else:
         await upd.message.reply_text(f"❌ Автомобиль {vin} уже есть в вашем гараже!")
@@ -609,7 +635,7 @@ async def garage_delete(upd, ctx):
     vin = q.data[12:]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ ДА, УДАЛИТЬ", callback_data=f"garage_confirm_del_{vin}")],
-        [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data="main_menu_back")]
+        [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data="garage_back_to_menu")]
     ])
     await q.edit_message_text(f"⚠️ Удалить автомобиль {vin} из гаража?\n\nЭто действие нельзя отменить.", reply_markup=kb)
 
@@ -622,6 +648,49 @@ async def garage_confirm_delete(upd, ctx):
     else:
         await q.edit_message_text(f"❌ Автомобиль {vin} не найден в гараже.")
     await garage_menu(upd, ctx)
+
+async def garage_comment_start(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    vin = q.data[16:]  # убираем "garage_comment_"
+    ctx.user_data['comment_vin'] = vin
+    await q.edit_message_text(
+        f"✏️ **КОММЕНТАРИЙ К АВТОМОБИЛЮ**\n\n"
+        f"Автомобиль: `{vin}`\n\n"
+        f"Введите комментарий для этого автомобиля.\n"
+        f"Например: «зимняя резина», «жена», «служебный»\n\n"
+        f"Или отправьте '-' чтобы удалить комментарий.",
+        parse_mode='Markdown'
+    )
+    return GARAGE_COMMENT
+
+async def garage_comment_input(upd, ctx):
+    user_id = upd.effective_user.id
+    vin = ctx.user_data.get('comment_vin')
+    
+    if not vin:
+        await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+        return ConversationHandler.END
+    
+    comment = upd.message.text.strip()
+    if comment == "-":
+        comment = ""
+    
+    update_car_comment(user_id, vin, comment)
+    
+    if comment:
+        await upd.message.reply_text(f"✅ Комментарий «{comment}» добавлен к автомобилю `{vin}`!", parse_mode='Markdown')
+    else:
+        await upd.message.reply_text(f"✅ Комментарий к автомобилю `{vin}` удалён!", parse_mode='Markdown')
+    
+    del ctx.user_data['comment_vin']
+    await garage_menu(upd, ctx)
+    return ConversationHandler.END
+
+async def garage_back_to_menu(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    await start(upd, ctx)
 
 # ========== ОСНОВНЫЕ КОМАНДЫ КЛИЕНТА ==========
 async def start(upd, ctx):
@@ -656,9 +725,14 @@ async def new_order(upd, ctx):
     if cars:
         keyboard = [[InlineKeyboardButton("🆕 Ввести вручную", callback_data="order_manual")]]
         for car in cars:
-            vin, desc, _ = car
-            desc_short = desc[:20] if desc else ""
-            keyboard.append([InlineKeyboardButton(f"🚗 {vin} ({desc_short})", callback_data=f"order_auto_{vin}")])
+            vin, description, comment, _ = car
+            desc_short = description[:20] if description else ""
+            display_text = f"🚗 {vin}"
+            if desc_short:
+                display_text += f" ({desc_short})"
+            if comment:
+                display_text += f" [{comment[:15]}]"
+            keyboard.append([InlineKeyboardButton(display_text, callback_data=f"order_auto_{vin}")])
         await upd.message.reply_text("🔧 ВЫБЕРИТЕ АВТОМОБИЛЬ из гаража или введите VIN вручную:", reply_markup=InlineKeyboardMarkup(keyboard))
         return VIN
     else:
@@ -802,13 +876,31 @@ async def confirm_order(upd, ctx):
         })
         ctx.user_data.clear()
         
-        await upd.context.bot.send_message(
-            MANAGER_ID,
-            f"🆕 НОВЫЙ ЗАКАЗ #{order_num}\n\n👤 Клиент: {upd.effective_user.full_name}\n📞 Телефон: {data.get('phone','')}\n🚗 VIN: {data.get('vin','')}\n📊 Пробег: {data.get('mileage','')} км\n🏙️ Город: {data.get('city','')}\n🚚 Доставка: {data.get('delivery_type','')} | {data.get('delivery_price',500)} руб.\n📍 Адрес: {data.get('delivery_address','не указан')}\n🔧 Узел: {data.get('part_node','не указан')}\n📝 Запчасти:\n{data.get('needed_parts','')}\n\n➡️ Для подбора запчастей ответьте на это сообщение"
-        )
+        # Предложение сохранить VIN в гараж
+        vin = data.get('vin', '')
+        if vin and len(vin) == 17:
+            cars = get_cars(upd.effective_user.id)
+            vin_exists = any(car[0] == vin for car in cars)
+            
+            if not vin_exists:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Да, сохранить", callback_data=f"save_vin_{vin}")],
+                    [InlineKeyboardButton("❌ Нет, спасибо", callback_data="no_save_vin")]
+                ])
+                await upd.message.reply_text(
+                    f"🚗 Хотите сохранить автомобиль с VIN `{vin}` в ваш гараж?\n\n"
+                    f"В следующий раз вам не придётся вводить VIN заново!",
+                    reply_markup=kb,
+                    parse_mode='Markdown'
+                )
         
         await upd.message.reply_text(
-            f"✅ ЗАКАЗ #{order_num} ПРИНЯТ!\n\n📋 Детали заказа:\n🚚 Доставка: {data.get('delivery_price',500)} руб.\n📍 Адрес: {data.get('delivery_address','не указан')}\n\n🔧 Менеджер скоро свяжется с вами для уточнения деталей.\n\nВы можете вернуться в главное меню:",
+            f"✅ ЗАКАЗ #{order_num} ПРИНЯТ!\n\n"
+            f"📋 Детали заказа:\n"
+            f"🚚 Доставка: {data.get('delivery_price',500)} руб.\n"
+            f"📍 Адрес: {data.get('delivery_address','не указан')}\n\n"
+            f"🔧 Менеджер скоро свяжется с вами для уточнения деталей.\n\n"
+            f"Вы можете вернуться в главное меню:",
             reply_markup=main_menu
         )
         return ConversationHandler.END
@@ -816,6 +908,51 @@ async def confirm_order(upd, ctx):
         ctx.user_data.clear()
         await upd.message.reply_text("✏️ Давайте начнём заказ заново. Нажмите 🛒 Новый заказ", reply_markup=main_menu)
         return ConversationHandler.END
+
+async def save_vin_callback(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    vin = q.data[9:]  # убираем "save_vin_"
+    user_id = q.from_user.id
+    
+    # Запрашиваем комментарий
+    ctx.user_data['save_vin'] = vin
+    await q.edit_message_text(
+        f"🚗 **СОХРАНЕНИЕ АВТОМОБИЛЯ**\n\n"
+        f"VIN: `{vin}`\n\n"
+        f"Добавьте комментарий (например, «зимняя резина», «жена», «служебный»)\n\n"
+        f"Или отправьте '-' чтобы пропустить:",
+        parse_mode='Markdown'
+    )
+    return SAVE_VIN_COMMENT
+
+async def save_vin_comment_input(upd, ctx):
+    user_id = upd.effective_user.id
+    vin = ctx.user_data.get('save_vin')
+    
+    if not vin:
+        await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+        return ConversationHandler.END
+    
+    comment = upd.message.text.strip()
+    if comment == "-":
+        comment = ""
+    
+    if save_car(user_id, vin, "", comment):
+        if comment:
+            await upd.message.reply_text(f"✅ Автомобиль `{vin}` сохранён в гараж!\n💬 Комментарий: {comment}", parse_mode='Markdown')
+        else:
+            await upd.message.reply_text(f"✅ Автомобиль `{vin}` сохранён в гараж!", parse_mode='Markdown')
+    else:
+        await upd.message.reply_text(f"❌ Автомобиль `{vin}` уже есть в вашем гараже!", parse_mode='Markdown')
+    
+    del ctx.user_data['save_vin']
+    return ConversationHandler.END
+
+async def no_save_vin_callback(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    await q.edit_message_text("OK, в следующий раз вы сможете сохранить автомобиль в гараж при создании заказа.")
 
 async def my_orders(upd, ctx):
     orders = get_user_orders(upd.effective_user.id)
@@ -1758,7 +1895,14 @@ def main():
     # ConversationHandler для гаража
     garage_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(garage_add_start, pattern="^garage_add$")],
-        states={11: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_vin)], 12: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_description)]},
+        states={GARAGE_VIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_vin)], GARAGE_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_description)]},
+        fallbacks=[CommandHandler("cancel", start)],
+    )
+    
+    # ConversationHandler для комментария к авто
+    garage_comment_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(garage_comment_start, pattern="^garage_comment_")],
+        states={GARAGE_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_comment_input)]},
         fallbacks=[CommandHandler("cancel", start)],
     )
     
@@ -1769,11 +1913,20 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
+    # ConversationHandler для сохранения VIN после заказа
+    save_vin_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(save_vin_callback, pattern="^save_vin_")],
+        states={SAVE_VIN_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_vin_comment_input)]},
+        fallbacks=[CommandHandler("cancel", start)],
+    )
+    
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(order_conv)
     app.add_handler(garage_conv)
+    app.add_handler(garage_comment_conv)
     app.add_handler(spend_bonus_conv)
+    app.add_handler(save_vin_conv)
     app.add_handler(CommandHandler("my_orders", my_orders))
     app.add_handler(CommandHandler("bonus", bonus_cmd))
     app.add_handler(CommandHandler("referral", referral_cmd))
@@ -1808,6 +1961,8 @@ def main():
     app.add_handler(CallbackQueryHandler(spend_all_bonus_callback, pattern="^spend_all_bonus_"))
     app.add_handler(CallbackQueryHandler(garage_delete, pattern="^garage_del_"))
     app.add_handler(CallbackQueryHandler(garage_confirm_delete, pattern="^garage_confirm_del_"))
+    app.add_handler(CallbackQueryHandler(garage_back_to_menu, pattern="^garage_back_to_menu$"))
+    app.add_handler(CallbackQueryHandler(no_save_vin_callback, pattern="^no_save_vin$"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     app.add_handler(CallbackQueryHandler(ask_client, pattern="^ask_"))
     
