@@ -1164,23 +1164,24 @@ async def delivery_cmd(upd, ctx):
     await upd.message.reply_text(text, parse_mode='Markdown')
 
 async def help_cmd(upd, ctx):
-    text = ("📖 **ПОМОЩЬ**\n\n"
-            "**Основные команды:**\n"
+    text = ("📖 ПОМОЩЬ\n\n"
+            "Основные команды:\n"
             "/start - Главное меню\n"
             "/my_orders - Мои заказы\n"
             "/bonus - Бонусы\n"
             "/referral - Рефералы\n"
             "/delivery - Доставка\n\n"
-            "**👨‍💼 Администратор:**\n"
+            "Администратор:\n"
             "/menu - Панель управления\n"
             "/fix - Создать тестовый заказ\n"
             "/resend - Повторно отправить подбор\n\n"
-            "**🚗 Мой гараж:**\n"
+            "Мой гараж:\n"
             "Храните VIN и описание автомобилей\n"
             "Быстрый выбор при создании заказа\n\n"
-            "**❓ Вопросы:**\n"
+            "Вопросы:\n"
             "По всем вопросам обращайтесь к менеджеру")
-    await upd.message.reply_text(text, reply_markup=main_menu, parse_mode='Markdown')
+    
+    await upd.message.reply_text(text, reply_markup=main_menu)
 
 # ========== МЕНЕДЖЕР (АДМИН) ==========
 user_selections = {}
