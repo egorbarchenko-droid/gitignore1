@@ -109,6 +109,18 @@ def wrap_text(text, max_length=25):
         lines.append(current_line)
     return "\n   ".join(lines)
 
+def generate_order_number():
+    """Генерирует уникальный номер заказа"""
+    while True:
+        num = f"RVN-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM orders WHERE order_number = ?', (num,))
+        exists = c.fetchone()
+        conn.close()
+        if not exists:
+            return num
+
 def get_monthly_stats(user_id):
     """Получает статистику заказов по месяцам"""
     conn = sqlite3.connect(DB_PATH)
@@ -233,7 +245,6 @@ def use_bonus(user_id, order_num, amount, desc):
     """Списание бонусов при оплате заказа"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Проверяем, достаточно ли бонусов
     c.execute('SELECT balance FROM bonuses WHERE user_id = ?', (user_id,))
     balance = c.fetchone()
     if balance and balance[0] >= amount:
@@ -275,7 +286,6 @@ def init_db():
             c.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
         except:
             pass
-    # Добавляем колонку comment в garage
     try:
         c.execute('ALTER TABLE garage ADD COLUMN comment TEXT')
     except:
@@ -306,7 +316,7 @@ def init_db():
 def save_order(data):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    num = f"RVN-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+    num = generate_order_number()
     c.execute('''INSERT INTO orders (
         order_number, user_id, user_name, phone, vin, mileage,
         style_city, style_highway, city, distance,
@@ -652,14 +662,15 @@ async def garage_confirm_delete(upd, ctx):
 async def garage_comment_start(upd, ctx):
     q = upd.callback_query
     await q.answer()
-    vin = q.data[16:]  # убираем "garage_comment_"
+    vin = q.data[16:]
     ctx.user_data['comment_vin'] = vin
     await q.edit_message_text(
         f"✏️ **КОММЕНТАРИЙ К АВТОМОБИЛЮ**\n\n"
         f"Автомобиль: `{vin}`\n\n"
         f"Введите комментарий для этого автомобиля.\n"
         f"Например: «зимняя резина», «жена», «служебный»\n\n"
-        f"Или отправьте '-' чтобы удалить комментарий.",
+        f"Или отправьте '-' чтобы удалить комментарий.\n\n"
+        f"Максимум 100 символов.",
         parse_mode='Markdown'
     )
     return GARAGE_COMMENT
@@ -673,6 +684,10 @@ async def garage_comment_input(upd, ctx):
         return ConversationHandler.END
     
     comment = upd.message.text.strip()
+    if len(comment) > 100:
+        await upd.message.reply_text("❌ Комментарий слишком длинный (максимум 100 символов).")
+        return GARAGE_COMMENT
+    
     if comment == "-":
         comment = ""
     
@@ -838,8 +853,17 @@ async def get_axle(upd, ctx):
 
 async def get_parts(upd, ctx):
     if not upd.message.text.strip():
-        await upd.message.reply_text("❌ Вы не ввели запчасти. Пожалуйста, введите список запчастей:")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Продолжить", callback_data="continue_order")],
+            [InlineKeyboardButton("❌ Отменить заказ", callback_data="cancel_order")]
+        ])
+        await upd.message.reply_text(
+            "❌ Вы не ввели запчасти.\n\n"
+            "Хотите продолжить оформление заказа или отменить его?",
+            reply_markup=kb
+        )
         return PARTS
+    
     ctx.user_data['needed_parts'] = upd.message.text
     
     data = ctx.user_data
@@ -853,6 +877,28 @@ async def get_parts(upd, ctx):
                "✅ Всё верно? Нажмите «Готово» или «Редактировать»")
     await upd.message.reply_text(summary, reply_markup=confirm_order_kb)
     return CONFIRM
+
+async def continue_order_callback(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    await q.edit_message_text("🔧 Пожалуйста, введите список запчастей (каждая с новой строки):")
+    return PARTS
+
+async def cancel_order_callback(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, отменить", callback_data="confirm_cancel_order")],
+        [InlineKeyboardButton("❌ Нет, продолжить", callback_data="continue_order")]
+    ])
+    await q.edit_message_text("⚠️ Вы уверены, что хотите отменить создание заказа?", reply_markup=kb)
+
+async def confirm_cancel_order_callback(upd, ctx):
+    q = upd.callback_query
+    await q.answer()
+    ctx.user_data.clear()
+    await q.edit_message_text("❌ Заказ отменён. Вы можете начать новый заказ в главном меню.", reply_markup=main_menu)
+    return ConversationHandler.END
 
 async def confirm_order(upd, ctx):
     if upd.message.text == "✅ Готово":
@@ -912,15 +958,15 @@ async def confirm_order(upd, ctx):
 async def save_vin_callback(upd, ctx):
     q = upd.callback_query
     await q.answer()
-    vin = q.data[9:]  # убираем "save_vin_"
+    vin = q.data[9:]
     user_id = q.from_user.id
     
-    # Запрашиваем комментарий
     ctx.user_data['save_vin'] = vin
     await q.edit_message_text(
         f"🚗 **СОХРАНЕНИЕ АВТОМОБИЛЯ**\n\n"
         f"VIN: `{vin}`\n\n"
-        f"Добавьте комментарий (например, «зимняя резина», «жена», «служебный»)\n\n"
+        f"Добавьте комментарий (например, «зимняя резина», «жена», «служебный»)\n"
+        f"Максимум 100 символов.\n\n"
         f"Или отправьте '-' чтобы пропустить:",
         parse_mode='Markdown'
     )
@@ -935,6 +981,10 @@ async def save_vin_comment_input(upd, ctx):
         return ConversationHandler.END
     
     comment = upd.message.text.strip()
+    if len(comment) > 100:
+        await upd.message.reply_text("❌ Комментарий слишком длинный (максимум 100 символов).")
+        return SAVE_VIN_COMMENT
+    
     if comment == "-":
         comment = ""
     
@@ -974,6 +1024,8 @@ async def my_orders(upd, ctx):
             icon = "🟡"
         elif 'Заказан' in status_text:
             icon = "📦"
+        elif 'Товар поступил' in status_text:
+            icon = "📦✅"
         elif 'Готов к выдаче' in status_text:
             icon = "✅"
         elif 'Оплачен' in status_text:
@@ -982,6 +1034,8 @@ async def my_orders(upd, ctx):
             icon = "🚚"
         elif 'Доставлен' in status_text:
             icon = "🏠"
+        elif 'Выдан' in status_text:
+            icon = "📋"
         else:
             icon = "📦"
         
@@ -1059,7 +1113,7 @@ async def apply_bonus_callback(upd, ctx):
     """Применение бонусов к заказу"""
     q = upd.callback_query
     await q.answer()
-    order_num = q.data[12:]  # убираем "apply_bonus_"
+    order_num = q.data[12:]
     uid = q.from_user.id
     
     order = get_order(order_num)
@@ -1068,7 +1122,7 @@ async def apply_bonus_callback(upd, ctx):
         return
     
     if order.get('status') != 'confirmed':
-        await q.edit_message_text("❌ Бонусы можно применить только к неподтверждённому заказу")
+        await q.edit_message_text("❌ Бонусы можно применить только к заказу в статусе 'Ожидает оплаты'")
         return
     
     bonus_data = get_bonus(uid)
@@ -1079,11 +1133,10 @@ async def apply_bonus_callback(upd, ctx):
         await q.edit_message_text("❌ У вас нет бонусов для списания")
         return
     
-    # Предлагаем списать бонусы
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"✅ Списать все ({int(balance)} руб.)", callback_data=f"spend_all_bonus_{order_num}")],
         [InlineKeyboardButton("✏️ Ввести сумму", callback_data=f"spend_custom_bonus_{order_num}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data=f"view_{order_num}")]
+        [InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"view_{order_num}")]
     ])
     
     await q.edit_message_text(
@@ -1101,7 +1154,7 @@ async def spend_all_bonus_callback(upd, ctx):
     """Списать все доступные бонусы"""
     q = upd.callback_query
     await q.answer()
-    order_num = q.data[16:]  # убираем "spend_all_bonus_"
+    order_num = q.data[16:]
     uid = q.from_user.id
     
     order = get_order(order_num)
@@ -1119,9 +1172,7 @@ async def spend_all_bonus_callback(upd, ctx):
         await q.edit_message_text("❌ Недостаточно бонусов для списания")
         return
     
-    # Списываем бонусы
     if use_bonus(uid, order_num, spend_amount, f"Списание бонусов по заказу {order_num}"):
-        # Обновляем сумму заказа
         new_total = total_sum - spend_amount
         update_order(order_num, total_price=order.get('total_price', 0) - spend_amount)
         
@@ -1140,7 +1191,7 @@ async def spend_custom_bonus_callback(upd, ctx):
     """Списать определённую сумму бонусов"""
     q = upd.callback_query
     await q.answer()
-    order_num = q.data[18:]  # убираем "spend_custom_bonus_"
+    order_num = q.data[18:]
     ctx.user_data['bonus_order'] = order_num
     await q.edit_message_text("✏️ Введите сумму бонусов для списания (целое число):")
     return SPEND_BONUS
@@ -1179,7 +1230,6 @@ async def spend_custom_bonus_input(upd, ctx):
         await upd.message.reply_text(f"❌ Сумма списания не может превышать сумму заказа ({total_sum} руб.).")
         return SPEND_BONUS
     
-    # Списываем бонусы
     if use_bonus(user_id, order_num, amount, f"Списание бонусов по заказу {order_num}"):
         new_total = total_sum - amount
         update_order(order_num, total_price=order.get('total_price', 0) - amount)
@@ -1220,7 +1270,6 @@ async def bonus_cmd(upd, ctx):
     
     await upd.message.reply_text(text, parse_mode='Markdown')
     
-    # Кнопки для дополнительной статистики
     monthly_stats = get_monthly_stats(uid)
     if monthly_stats:
         kb = InlineKeyboardMarkup([
@@ -1345,8 +1394,9 @@ async def manager_reply(upd, ctx):
     if not products:
         await upd.message.reply_text("❌ Не распознано. Формат:\nНазвание запчасти = 1000 руб\n\nПример:\nМасло моторное Ravenol 5W-40 = 3500 руб")
         return
-    total_cost = sum(p['price'] for p in products) * 0.7
-    update_order(order_num, selected_products=upd.message.text, our_cost=total_cost, status='waiting_selection', status_text='🟡 Ожидает выбора')
+    
+    # БЕЗ РАСЧЁТА СЕБЕСТОИМОСТИ
+    update_order(order_num, selected_products=upd.message.text, status='waiting_selection', status_text='🟡 Ожидает выбора')
     
     kb = []
     for i, p in enumerate(products):
@@ -1541,6 +1591,8 @@ async def admin_menu(upd, ctx, message=None):
             icon = "🟡"
         elif 'Заказан' in status_text:
             icon = "📦"
+        elif 'Товар поступил' in status_text:
+            icon = "📦✅"
         elif 'Готов к выдаче' in status_text:
             icon = "✅"
         elif 'Оплачен' in status_text:
@@ -1549,6 +1601,8 @@ async def admin_menu(upd, ctx, message=None):
             icon = "🚚"
         elif 'Доставлен' in status_text:
             icon = "🏠"
+        elif 'Выдан' in status_text:
+            icon = "📋"
         else:
             icon = "📦"
         
@@ -1602,7 +1656,7 @@ async def admin_callback(upd, ctx):
     if data == "admin_fix":
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        num = f"RVN-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        num = generate_order_number()
         c.execute('''INSERT INTO orders (
             order_number, user_id, user_name, vin, mileage,
             style_city, style_highway, city, distance,
@@ -1637,9 +1691,11 @@ async def admin_callback(upd, ctx):
         kb = [
             [InlineKeyboardButton("💰 Оплачен", callback_data=f"pay_{order_num}")],
             [InlineKeyboardButton("📦 Заказан", callback_data=f"ordered_{order_num}")],
+            [InlineKeyboardButton("📦✅ Товар поступил", callback_data=f"arrived_{order_num}")],
             [InlineKeyboardButton("✅ Готов к выдаче", callback_data=f"ready_{order_num}")],
             [InlineKeyboardButton("🚚 Отправлен", callback_data=f"ship_{order_num}")],
             [InlineKeyboardButton("🏠 Доставлен", callback_data=f"del_{order_num}")],
+            [InlineKeyboardButton("📋 Выдан", callback_data=f"issued_{order_num}")],
             [InlineKeyboardButton("✏️ Изменить доставку", callback_data=f"edit_delivery_{order_num}")],
             [InlineKeyboardButton("❓ Уточнить", callback_data=f"ask_{order_num}")],
             [InlineKeyboardButton("🔍 Детали", callback_data=f"detail_{order_num}")],
@@ -1678,6 +1734,19 @@ async def admin_callback(upd, ctx):
         await q.edit_message_text(q.message.text + "\n\n✅ **СТАТУС: ЗАКАЗАН**", parse_mode='Markdown')
         return
     
+    # --- ТОВАР ПОСТУПИЛ ---
+    if data.startswith("arrived_"):
+        order_num = data[8:]
+        update_order(order_num, status='arrived', status_text='📦✅ Товар поступил')
+        order = get_order(order_num)
+        if order:
+            await ctx.bot.send_message(
+                order['user_id'],
+                text=f"📦✅ Заказ {order_num}\n\nТовар поступил на склад! Скоро он будет готов к выдаче или отправке."
+            )
+        await q.edit_message_text(q.message.text + "\n\n✅ **СТАТУС: ТОВАР ПОСТУПИЛ**", parse_mode='Markdown')
+        return
+    
     # --- ГОТОВ К ВЫДАЧЕ ---
     if data.startswith("ready_"):
         order_num = data[6:]
@@ -1703,6 +1772,19 @@ async def admin_callback(upd, ctx):
         if order:
             await ctx.bot.send_message(order['user_id'], text=f"🏠 Заказ {order_num} доставлен! Спасибо за покупку!")
         await q.edit_message_text(q.message.text + "\n\n✅ **СТАТУС: ДОСТАВЛЕН**", parse_mode='Markdown')
+        return
+    
+    # --- ВЫДАН ---
+    if data.startswith("issued_"):
+        order_num = data[7:]
+        update_order(order_num, status='issued', status_text='📋 Выдан')
+        order = get_order(order_num)
+        if order:
+            await ctx.bot.send_message(
+                order['user_id'],
+                text=f"📋 Заказ {order_num} ВЫДАН!\n\nСпасибо, что воспользовались нашими услугами! Ждём вас снова! 🏎️"
+            )
+        await q.edit_message_text(q.message.text + "\n\n✅ **СТАТУС: ВЫДАН**", parse_mode='Markdown')
         return
     
     # --- ИЗМЕНИТЬ ДОСТАВКУ (показать варианты) ---
@@ -1763,8 +1845,6 @@ async def admin_callback(upd, ctx):
                 f"📍 Адрес: {order.get('delivery_address', '-')}\n"
                 f"🚚 Доставка: {order.get('delivery_type', '-')} | {order.get('delivery_price', 0)} руб.\n"
                 f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
-                f"💰 Себестоимость: {order.get('our_cost', 0)} руб.\n"
-                f"💵 Маржа: {order.get('total_price', 0) - order.get('our_cost', 0)} руб.\n"
                 f"📦 Статус: {order.get('status_text', '-')}\n"
                 f"📅 Создан: {order.get('created_at', '-')}")
         if order.get('tracking_number'):
@@ -1820,11 +1900,18 @@ async def track_input(upd, ctx):
         return
     if 'track_for' in ctx.user_data:
         order_num = ctx.user_data.pop('track_for')
-        update_order(order_num, tracking_number=upd.message.text, status='shipped', status_text='🚚 Отправлен')
+        tracking = upd.message.text.strip()
+        
+        update_order(order_num, tracking_number=tracking, status='shipped', status_text='🚚 Отправлен')
+        
         order = get_order(order_num)
         if order:
-            await ctx.bot.send_message(order['user_id'], text=f"📦 Заказ {order_num} отправлен!\nТрек-номер: {upd.message.text}")
-        await upd.message.reply_text(f"✅ Трек-номер добавлен к заказу {order_num}")
+            await ctx.bot.send_message(
+                order['user_id'],
+                text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер для отслеживания: `{tracking}`\n\nВы можете отслеживать посылку на сайте почты.",
+                parse_mode='Markdown'
+            )
+        await upd.message.reply_text(f"✅ Трек-номер `{tracking}` добавлен к заказу {order_num}", parse_mode='Markdown')
 
 async def fix_orders(upd, ctx):
     if upd.effective_user.id != MANAGER_ID:
@@ -1832,7 +1919,7 @@ async def fix_orders(upd, ctx):
         return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    num = f"RVN-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+    num = generate_order_number()
     c.execute('''INSERT INTO orders (
         order_number, user_id, user_name, vin, mileage,
         style_city, style_highway, city, distance,
@@ -1963,6 +2050,9 @@ def main():
     app.add_handler(CallbackQueryHandler(garage_confirm_delete, pattern="^garage_confirm_del_"))
     app.add_handler(CallbackQueryHandler(garage_back_to_menu, pattern="^garage_back_to_menu$"))
     app.add_handler(CallbackQueryHandler(no_save_vin_callback, pattern="^no_save_vin$"))
+    app.add_handler(CallbackQueryHandler(continue_order_callback, pattern="^continue_order$"))
+    app.add_handler(CallbackQueryHandler(cancel_order_callback, pattern="^cancel_order$"))
+    app.add_handler(CallbackQueryHandler(confirm_cancel_order_callback, pattern="^confirm_cancel_order$"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     app.add_handler(CallbackQueryHandler(ask_client, pattern="^ask_"))
     
