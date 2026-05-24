@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 3.0.0 - FULLY TESTED
+Версия: 3.1.0 - FULLY FIXED
 """
 
 import os
@@ -315,9 +315,9 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_bonus_history_user_id ON bonus_history(user_id)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_bonus_history_order_number ON bonus_history(order_number)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_garage_user_id ON garage(user_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_bonus_history_order_number ON bonus_history(order_number)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)')
     
     conn.commit()
@@ -573,6 +573,43 @@ def use_bonus(user_id: int, order_num: str, amount: int, desc: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Use bonus error: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def refund_bonus(user_id: int, order_num: str, amount: int, desc: str) -> bool:
+    """Возврат бонусов (списание начисленных)"""
+    if amount <= 0:
+        return False
+    
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute('BEGIN IMMEDIATE')
+        
+        c.execute('SELECT balance FROM bonuses WHERE user_id = ?', (user_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.rollback()
+            return False
+        
+        if row[0] < amount:
+            conn.rollback()
+            return False
+        
+        c.execute('UPDATE bonuses SET balance = balance - ?, total_earned = total_earned - ? WHERE user_id = ?',
+                  (amount, amount, user_id))
+        
+        c.execute('''INSERT INTO bonus_history (user_id, order_number, amount, type, description, created_at)
+                     VALUES (?,?,?,?,?,?)''',
+                  (user_id, order_num, amount, 'refund', desc, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Refund bonus error: {e}")
         conn.rollback()
         return False
     finally:
@@ -1372,7 +1409,7 @@ async def bonus_history_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = "📜 **ИСТОРИЯ БОНУСОВ**\n\n"
     for h in history:
         order_num, amount, h_type, desc, created = h
-        sign = "➕" if h_type == 'earned' else "➖"
+        sign = "➕" if h_type == 'earned' else "➖" if h_type == 'spent' else "🔄"
         text += f"{sign} **{amount} руб.** - {desc}\n"
         text += f"   📅 {created[:10]}\n\n"
     
@@ -1386,6 +1423,8 @@ async def bonus_back_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = upd.callback_query
     await query.answer()
     await bonus_cmd(upd, ctx)
+
+# ========== ПРИМЕНЕНИЕ БОНУСОВ ==========
 
 @require_order_owner
 async def apply_bonus_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2167,66 +2206,97 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Обработка статусов
     if data.startswith("pay_"):
         order_num = data[4:]
-        update_order(order_num, status='paid')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} оплачен! Спасибо за покупку!")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОПЛАЧЕН**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='paid'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} оплачен! Спасибо за покупку!")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОПЛАЧЕН**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("ordered_"):
         order_num = data[8:]
-        update_order(order_num, status='ordered')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"📦 Заказ {order_num} заказан у поставщика! Ожидайте поступления.")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ЗАКАЗАН**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='ordered'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"📦 Заказ {order_num} заказан у поставщика! Ожидайте поступления.")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ЗАКАЗАН**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("arrived_"):
         order_num = data[8:]
-        update_order(order_num, status='arrived')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"📦✅ Заказ {order_num}\n\nТовар поступил на склад! Скоро он будет готов к выдаче или отправке.")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ТОВАР ПОСТУПИЛ**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='arrived'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"📦✅ Заказ {order_num}\n\nТовар поступил на склад! Скоро он будет готов к выдаче или отправке.")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ТОВАР ПОСТУПИЛ**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("ready_"):
         order_num = data[6:]
-        update_order(order_num, status='ready')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} готов к выдаче! Можете забрать.")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ГОТОВ К ВЫДАЧЕ**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='ready'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} готов к выдаче! Можете забрать.")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ГОТОВ К ВЫДАЧЕ**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("ship_"):
         order_num = data[5:]
+        order_num = clean_order_number(order_num)
+        
+        if not order_num:
+            await query.edit_message_text("❌ Неверный номер заказа")
+            return
+        
         ctx.user_data['track_for'] = order_num
-        await query.edit_message_text(f"📦 Введите трек-номер для заказа {order_num}:")
+        logger.info(f"[ADMIN] Установлен track_for для заказа: {order_num}")
+        
+        await query.edit_message_text(
+            f"📦 **Введите трек-номер для заказа {order_num}:**\n\n"
+            f"Пожалуйста, отправьте трек-номер **в ответ на это сообщение**.",
+            parse_mode='Markdown'
+        )
         return
     
     if data.startswith("del_"):
         order_num = data[4:]
-        update_order(order_num, status='delivered')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"🏠 Заказ {order_num} доставлен! Спасибо за покупку!")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ДОСТАВЛЕН**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='delivered'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"🏠 Заказ {order_num} доставлен! Спасибо за покупку!")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ДОСТАВЛЕН**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("issued_"):
         order_num = data[7:]
-        update_order(order_num, status='issued')
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(order['user_id'], text=f"📋 Заказ {order_num} ВЫДАН!\n\nСпасибо, что воспользовались нашими услугами! Ждём вас снова! 🏎️")
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ВЫДАН**", parse_mode='Markdown')
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='issued'):
+            order = get_order(order_num)
+            if order:
+                await ctx.bot.send_message(order['user_id'], text=f"📋 Заказ {order_num} ВЫДАН!\n\nСпасибо, что воспользовались нашими услугами! Ждём вас снова! 🏎️")
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ВЫДАН**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("cancel_"):
         order_num = data[7:]
+        order_num = clean_order_number(order_num)
         
         # Возврат бонусов при отмене
         order = get_order(order_num)
@@ -2237,48 +2307,137 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 c.execute('SELECT amount FROM bonus_history WHERE order_number = ? AND type = "earned"', (order_num,))
                 bonus_row = c.fetchone()
                 if bonus_row and bonus_row[0] > 0:
-                    use_bonus(order['user_id'], order_num, bonus_row[0], f"Возврат бонусов при отмене заказа {order_num}")
+                    refund_bonus(order['user_id'], order_num, bonus_row[0], f"Возврат бонусов при отмене заказа {order_num}")
                     await ctx.bot.send_message(order['user_id'], text=f"❌ Заказ {order_num} отменён менеджером.\n\n💰 Бонусы в размере {bonus_row[0]} руб. были списаны с вашего счета.")
                 else:
                     await ctx.bot.send_message(order['user_id'], text=f"❌ Заказ {order_num} отменён менеджером.")
             finally:
                 conn.close()
         
-        update_order(order_num, status='cancelled')
-        await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОТМЕНЁН**", parse_mode='Markdown')
+        if update_order(order_num, status='cancelled'):
+            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОТМЕНЁН**", parse_mode='Markdown')
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
 
+# ========== ТРЕК-НОМЕР (ИСПРАВЛЕННЫЙ) ==========
+
 async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода трек-номера"""
+    """Обработка ввода трек-номера менеджером"""
     if upd.effective_user.id != MANAGER_ID:
         return
     
-    if 'track_for' not in ctx.user_data:
+    # Проверяем, что это ответ на сообщение бота
+    if not upd.message.reply_to_message:
+        logger.info("track_input: not a reply to message")
         return
     
-    order_num = ctx.user_data.pop('track_for')
     tracking = upd.message.text.strip()
-    
-    if not tracking:
-        await upd.message.reply_text("❌ Трек-номер не может быть пустым.")
+    if not tracking or len(tracking) < 3:
+        logger.info(f"track_input: invalid tracking number: {tracking}")
         return
     
-    update_order(order_num, tracking_number=tracking, status='shipped')
-    order = get_order(order_num)
+    logger.info(f"[TRACK] Получен трек-номер: {tracking}")
+    logger.info(f"[TRACK] user_data keys: {list(ctx.user_data.keys())}")
     
-    if order:
-        await ctx.bot.send_message(
-            order['user_id'],
-            text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер для отслеживания: `{tracking}`\n\nВы можете отслеживать посылку на сайте почты.",
+    order_num = None
+    
+    # Способ 1: Из user_data (если кнопка была нажата)
+    if 'track_for' in ctx.user_data:
+        order_num = ctx.user_data.pop('track_for')
+        logger.info(f"[TRACK] Найден заказ из user_data: {order_num}")
+    
+    # Способ 2: Из сообщения, на которое отвечаем
+    if not order_num and upd.message.reply_to_message:
+        reply_text = upd.message.reply_to_message.text or ""
+        match = re.search(r'(RVN-[A-Z0-9]{6})', reply_text)
+        if match:
+            order_num = match.group(1)
+            logger.info(f"[TRACK] Найден заказ из reply: {order_num}")
+    
+    # Способ 3: Поиск в истории сообщений
+    if not order_num:
+        logger.info("[TRACK] Поиск заказа в истории...")
+        try:
+            async for msg in upd.message.chat.iter_history(limit=20):
+                if msg.text and 'RVN-' in msg.text:
+                    match = re.search(r'(RVN-[A-Z0-9]{6})', msg.text)
+                    if match:
+                        order_num = match.group(1)
+                        logger.info(f"[TRACK] Найден заказ из истории: {order_num}")
+                        break
+        except Exception as e:
+            logger.error(f"[TRACK] Ошибка при поиске в истории: {e}")
+    
+    if not order_num:
+        logger.warning(f"[TRACK] Не удалось определить заказ для трек-номера: {tracking}")
+        await upd.message.reply_text(
+            "❌ **Не удалось определить номер заказа.**\n\n"
+            "**Правильный порядок действий:**\n"
+            "1. Откройте админ-панель: `/menu`\n"
+            "2. Выберите нужный заказ\n"
+            "3. Нажмите кнопку **🚚 Отправлен**\n"
+            "4. **Ответьте на сообщение бота** с трек-номером\n\n"
+            f"Ваш трек-номер: `{tracking}`",
             parse_mode='Markdown'
         )
-        await upd.message.reply_text(f"✅ Трек-номер `{tracking}` добавлен к заказу {order_num}!\n\nКлиент получил уведомление.", parse_mode='Markdown')
-    else:
-        await upd.message.reply_text(f"❌ Заказ {order_num} не найден!")
+        return
+    
+    order_num = clean_order_number(order_num)
+    if not order_num:
+        await upd.message.reply_text("❌ Неверный формат номера заказа")
+        return
+    
+    order = get_order(order_num)
+    if not order:
+        await upd.message.reply_text(f"❌ Заказ {order_num} не найден в базе данных!")
+        return
+    
+    # Обновляем заказ
+    logger.info(f"[TRACK] Обновление заказа {order_num}: tracking={tracking}")
+    success = update_order(order_num, tracking_number=tracking, status='shipped')
+    
+    if not success:
+        await upd.message.reply_text(
+            f"❌ **Ошибка при обновлении заказа {order_num}**\n\n"
+            f"Пожалуйста, попробуйте ещё раз.\n"
+            f"Трек-номер: `{tracking}`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Отправляем уведомление клиенту
+    try:
+        await ctx.bot.send_message(
+            order['user_id'],
+            text=f"📦 **Заказ {order_num} отправлен!**\n\n"
+                 f"📮 **Трек-номер для отслеживания:** `{tracking}`\n\n"
+                 f"Вы можете отслеживать посылку на сайте почты.",
+            parse_mode='Markdown'
+        )
+        logger.info(f"[TRACK] Уведомление отправлено клиенту {order['user_id']}")
+    except Exception as e:
+        logger.error(f"[TRACK] Не удалось отправить уведомление клиенту: {e}")
+    
+    # Подтверждение менеджеру
+    await upd.message.reply_text(
+        f"✅ **Трек-номер успешно добавлен!**\n\n"
+        f"📦 Заказ: `{order_num}`\n"
+        f"📮 Трек-номер: `{tracking}`\n"
+        f"👤 Клиент: {order.get('user_name', 'Неизвестно')}\n"
+        f"📞 Телефон: {order.get('phone', 'Не указан')}\n\n"
+        f"Клиент получил уведомление.",
+        parse_mode='Markdown'
+    )
+    
+    # Очищаем временные данные
+    ctx.user_data.pop('track_for', None)
+
+# ========== ОТВЕТ МЕНЕДЖЕРА НА ЗАКАЗ ==========
 
 @require_manager
 async def manager_reply(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Ответ менеджера на заказ"""
+    """Ответ менеджера на заказ (подбор запчастей)"""
     if not upd.message.reply_to_message:
         return
     
