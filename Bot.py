@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 6.0.0 - FULLY FIXED WITH ALL FEATURES
+Версия: 7.0.0 - FULLY FIXED WITH ALL FEATURES
 """
 
 import os
@@ -68,7 +68,8 @@ user_selections = {}
 ALLOWED_ORDER_COLUMNS = {
     'phone', 'our_cost', 'tracking_number', 'final_order', 
     'total_price', 'status', 'status_text', 'delivery_type',
-    'delivery_price', 'distance', 'city', 'delivery_address', 'selected_products'
+    'delivery_price', 'distance', 'city', 'delivery_address', 'selected_products',
+    'style_city', 'style_highway'
 }
 
 # Статусы заказов
@@ -183,7 +184,7 @@ confirm_order_kb = ReplyKeyboardMarkup([
     ["✅ Готово", "✏️ Редактировать"]
 ], resize_keyboard=True)
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+# ========== БЕЗОПАСНЫЕ ФУНКЦИИ ==========
 
 def check_rate_limit(user_id: int) -> bool:
     """Проверка rate limiting"""
@@ -342,7 +343,7 @@ def init_db():
     )''')
     
     # Добавляем недостающие колонки
-    for col in ['phone', 'our_cost', 'tracking_number', 'final_order', 'comment', 'selected_products']:
+    for col in ['phone', 'our_cost', 'tracking_number', 'final_order', 'comment', 'selected_products', 'style_city', 'style_highway']:
         try:
             c.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
         except:
@@ -994,7 +995,7 @@ async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await upd.message.reply_text(text, reply_markup=main_menu, parse_mode='Markdown')
 
-# ========== НОВЫЙ ЗАКАЗ (БАЗОВЫЕ ФУНКЦИИ) ==========
+# ========== НОВЫЙ ЗАКАЗ ==========
 
 async def new_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Начало оформления заказа"""
@@ -1807,6 +1808,8 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (f"📋 **ЗАКАЗ {order_num}**\n\n"
             f"🚗 VIN: `{order.get('vin', 'не указан')}`\n"
             f"📊 Пробег: {order.get('mileage', 'не указан')} км\n"
+            f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
+            f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
             f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
             f"📞 Телефон: {order.get('phone', 'не указан')}\n"
             f"💰 Запчасти: {total_parts} руб.\n"
@@ -2527,6 +2530,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = (f"📋 **ЗАКАЗ {order.get('order_number', '')}**\n\n"
                 f"👤 {order.get('user_name', '')}\n"
                 f"📞 {order.get('phone', 'не указан')}\n"
+                f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
+                f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
                 f"🏙️ Город: {order.get('city', 'не указан')}\n"
                 f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
                 f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
@@ -2607,6 +2612,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
                 f"🚗 VIN: {order.get('vin', 'Не указан')}\n"
                 f"📊 Пробег: {order.get('mileage', 'Не указан')} км\n"
+                f"🏙️ Стиль город: {order.get('style_city', 'Не указан')}\n"
+                f"🛣️ Стиль трасса: {order.get('style_highway', 'Не указан')}\n"
                 f"🏙️ Город: {order.get('city', 'Не указан')}\n"
                 f"📍 Адрес: {order.get('delivery_address', 'Не указан')}\n"
                 f"🚚 Доставка: {order.get('delivery_type', 'Не указана')} | {order.get('delivery_price', 0)} руб.\n"
@@ -3526,7 +3533,36 @@ def main():
     
     app.post_init = set_commands
     
-    # ConversationHandler для удаления товаров клиентом (комментарий)
+    # ConversationHandler для заказов
+    order_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(🛒 Новый заказ)$"), new_order)],
+        states={
+            OrderStates.VIN: [
+                CallbackQueryHandler(order_auto_callback, pattern="^order_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_vin)
+            ],
+            OrderStates.MILEAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_mileage)],
+            OrderStates.STYLE_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_style_city)],
+            OrderStates.STYLE_HIGHWAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_style_highway)],
+            OrderStates.DELIVERY_TYPE: [MessageHandler(filters.Regex("^(Курьером|Самовывоз|Сторонняя фирма)$"), get_delivery_type)],
+            OrderStates.ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_address)],
+            OrderStates.PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+            OrderStates.PART_NODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_part_node)],
+            OrderStates.AXLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_axle)],
+            OrderStates.PARTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_parts)],
+            OrderStates.CONFIRM: [
+                MessageHandler(filters.Regex("^(✅ Готово|✏️ Редактировать)$"), confirm_order),
+                CallbackQueryHandler(confirm_edit_callback, pattern="^(confirm_edit|cancel_edit)$"),
+                CallbackQueryHandler(continue_order_callback, pattern="^continue_order$"),
+                CallbackQueryHandler(cancel_order_callback, pattern="^cancel_order$"),
+                CallbackQueryHandler(confirm_cancel_order_callback, pattern="^confirm_cancel_order$")
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=3600
+    )
+    
+    # ConversationHandler для удаления товаров клиентом
     remove_items_conv = ConversationHandler(
         entry_points=[],
         states={RemoveStates.COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_comment_input)]},
@@ -3552,17 +3588,25 @@ def main():
     
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("menu", admin_menu))
+    app.add_handler(order_conv)
+    app.add_handler(remove_items_conv)
+    app.add_handler(admin_add_item_conv)
+    app.add_handler(admin_change_price_conv)
+    
     app.add_handler(CommandHandler("my_orders", my_orders))
     app.add_handler(CommandHandler("bonus", bonus_cmd))
     app.add_handler(CommandHandler("referral", referral_cmd))
     app.add_handler(CommandHandler("delivery", delivery_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("menu", admin_menu))
     
-    # ConversationHandler
-    app.add_handler(remove_items_conv)
-    app.add_handler(admin_add_item_conv)
-    app.add_handler(admin_change_price_conv)
+    # Кнопочные обработчики
+    app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
+    app.add_handler(MessageHandler(filters.Regex("^(📦 Мои заказы)$"), my_orders))
+    app.add_handler(MessageHandler(filters.Regex("^(🎁 Бонусы)$"), bonus_cmd))
+    app.add_handler(MessageHandler(filters.Regex("^(🔗 Рефералы)$"), referral_cmd))
+    app.add_handler(MessageHandler(filters.Regex("^(🚚 Доставка)$"), delivery_cmd))
+    app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     
     # Callback обработчики
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_item_|admin_confirm_remove_|admin_add_item_|admin_change_price_|admin_select_price_item_)"))
@@ -3581,15 +3625,6 @@ def main():
     app.add_handler(CallbackQueryHandler(confirm_user_cancel_callback, pattern="^confirm_user_cancel_"))
     app.add_handler(CallbackQueryHandler(select_cb, pattern="^sel_"))
     app.add_handler(CallbackQueryHandler(finalize_cb, pattern="^fin_"))
-    
-    # Кнопочные обработчики
-    app.add_handler(MessageHandler(filters.Regex("^(🛒 Новый заказ)$"), new_order))
-    app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
-    app.add_handler(MessageHandler(filters.Regex("^(📦 Мои заказы)$"), my_orders))
-    app.add_handler(MessageHandler(filters.Regex("^(🎁 Бонусы)$"), bonus_cmd))
-    app.add_handler(MessageHandler(filters.Regex("^(🔗 Рефералы)$"), referral_cmd))
-    app.add_handler(MessageHandler(filters.Regex("^(🚚 Доставка)$"), delivery_cmd))
-    app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     
     # Ответы менеджера
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), track_input))
