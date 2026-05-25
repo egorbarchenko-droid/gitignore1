@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 7.0.0 - FULLY FIXED WITH ALL FEATURES
+Версия: 9.0.0 - FULLY FIXED WITH ALL FEATURES
 """
 
 import os
@@ -185,6 +185,42 @@ confirm_order_kb = ReplyKeyboardMarkup([
 ], resize_keyboard=True)
 
 # ========== БЕЗОПАСНЫЕ ФУНКЦИИ ==========
+
+def escape_markdown(text: str) -> str:
+    """Экранирование специальных символов для Markdown V2"""
+    if text is None:
+        return ""
+    text = str(text)
+    # Специальные символы, которые нужно экранировать в Markdown V2
+    special_chars = r'_*[]()~`>#+-=|{}.!'
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+def split_long_message(text: str, max_length: int = 4000) -> List[str]:
+    """Разбивает длинное сообщение на части"""
+    if len(text) <= max_length:
+        return [text]
+    
+    parts = []
+    lines = text.split('\n')
+    current_part = ""
+    
+    for line in lines:
+        if len(current_part) + len(line) + 1 <= max_length:
+            if current_part:
+                current_part += "\n" + line
+            else:
+                current_part = line
+        else:
+            if current_part:
+                parts.append(current_part)
+            current_part = line
+    
+    if current_part:
+        parts.append(current_part)
+    
+    return parts
 
 def check_rate_limit(user_id: int) -> bool:
     """Проверка rate limiting"""
@@ -960,6 +996,27 @@ def rate_limit(func):
             await upd.message.reply_text("⏳ Слишком часто! Подождите пару секунд.")
             return
         return await func(upd, ctx, *args, **kwargs)
+    return wrapper
+
+def safe_markdown(func):
+    """Декоратор для безопасной отправки Markdown сообщений"""
+    @wraps(func)
+    async def wrapper(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        try:
+            return await func(upd, ctx, *args, **kwargs)
+        except Exception as e:
+            if "can't parse entities" in str(e):
+                logger.warning(f"Markdown error in {func.__name__}: {e}")
+                if upd.callback_query:
+                    await upd.callback_query.edit_message_text(
+                        "❌ Ошибка форматирования сообщения. Пожалуйста, попробуйте ещё раз."
+                    )
+                else:
+                    await upd.message.reply_text(
+                        "❌ Ошибка форматирования сообщения. Пожалуйста, попробуйте ещё раз."
+                    )
+            else:
+                raise
     return wrapper
 
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
@@ -1789,6 +1846,7 @@ async def my_orders(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 @require_order_owner
+@safe_markdown
 async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Просмотр деталей заказа с возможностью удаления товаров"""
     query = upd.callback_query
@@ -1805,20 +1863,30 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = order.get('status', '')
     can_edit = status == 'waiting_payment'
     
+    # Экранируем все переменные
+    vin = escape_markdown(order.get('vin', 'не указан'))
+    mileage = escape_markdown(order.get('mileage', 'не указан'))
+    style_city = escape_markdown(order.get('style_city', 'не указан'))
+    style_highway = escape_markdown(order.get('style_highway', 'не указан'))
+    address = escape_markdown(order.get('delivery_address', 'не указан'))
+    phone = escape_markdown(order.get('phone', 'не указан'))
+    status_text = escape_markdown(order.get('status_text', 'неизвестен'))
+    tracking = escape_markdown(order.get('tracking_number', ''))
+    
     text = (f"📋 **ЗАКАЗ {order_num}**\n\n"
-            f"🚗 VIN: `{order.get('vin', 'не указан')}`\n"
-            f"📊 Пробег: {order.get('mileage', 'не указан')} км\n"
-            f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
-            f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
-            f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
-            f"📞 Телефон: {order.get('phone', 'не указан')}\n"
+            f"🚗 VIN: `{vin}`\n"
+            f"📊 Пробег: {mileage} км\n"
+            f"🏙️ Стиль город: {style_city}\n"
+            f"🛣️ Стиль трасса: {style_highway}\n"
+            f"📍 Адрес: {address}\n"
+            f"📞 Телефон: {phone}\n"
             f"💰 Запчасти: {total_parts} руб.\n"
             f"🚚 Доставка: {delivery_price} руб.\n"
             f"💳 **ИТОГО: {total_sum} руб.**\n"
-            f"📦 Статус: {order.get('status_text', 'неизвестен')}")
+            f"📦 Статус: {status_text}")
     
-    if order.get('tracking_number'):
-        text += f"\n📮 Трек-номер: `{order.get('tracking_number')}`"
+    if tracking:
+        text += f"\n📮 Трек-номер: `{tracking}`"
     
     if eligible_sum > 0:
         text += f"\n\n🎁 **Доступно для бонусов:** {eligible_sum} руб.\n"
@@ -1833,16 +1901,23 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if isinstance(selected_parts, list) and selected_parts:
                 for i, part in enumerate(selected_parts):
                     if isinstance(part, dict):
-                        part_name = part.get('name', 'неизвестно')
+                        part_name = escape_markdown(part.get('name', 'неизвестно'))
                         part_price = part.get('price', 0)
                         ravenol_mark = " ❌ (Ravenol)" if is_ravenol_product(part_name) else ""
                         text += f"{i+1}. {part_name}\n   → {part_price} руб.{ravenol_mark}\n"
             else:
-                text += f"{final_order[:300]}"
+                text += f"{escape_markdown(final_order[:300])}"
         except:
-            text += f"{final_order[:300]}"
+            text += f"{escape_markdown(final_order[:300])}"
     elif order.get('needed_parts'):
-        text += f"\n\n📝 **ИЗНАЧАЛЬНЫЙ ЗАПРОС:**\n{order.get('needed_parts', 'не указан')[:300]}"
+        needed = escape_markdown(order.get('needed_parts', 'не указан')[:300])
+        text += f"\n\n📝 **ИЗНАЧАЛЬНЫЙ ЗАПРОС:**\n{needed}"
+    
+    # Разбиваем длинное сообщение
+    parts = split_long_message(text, 4000)
+    await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    for part in parts[1:]:
+        await query.message.reply_text(part, parse_mode='Markdown')
     
     # Клавиатура
     kb = []
@@ -1859,7 +1934,7 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     kb.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")])
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
 async def back_orders_list(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Назад к списку заказов"""
@@ -1879,7 +1954,7 @@ async def main_menu_back(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Выбор товаров для удаления из заказа"""
     query = upd.callback_query
-    order_num = query.data[12:]  # "remove_items_RVN-XXX"
+    order_num = query.data[12:]
     uid = query.from_user.id
     
     order = get_order(order_num)
@@ -1913,7 +1988,7 @@ async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = []
         for i, part in enumerate(selected_parts):
             if isinstance(part, dict):
-                part_name = part.get('name', 'Неизвестно')[:35]
+                part_name = escape_markdown(part.get('name', 'Неизвестно')[:35])
                 part_price = part.get('price', 0)
                 kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
                                                callback_data=f"toggle_item_{order_num}_{i}")])
@@ -1962,7 +2037,7 @@ async def toggle_item_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = []
     for i, part in enumerate(selected_parts):
         if isinstance(part, dict):
-            part_name = part.get('name', 'Неизвестно')[:35]
+            part_name = escape_markdown(part.get('name', 'Неизвестно')[:35])
             part_price = part.get('price', 0)
             check = "✅" if i in selected_items else "⬜"
             kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
@@ -1978,7 +2053,7 @@ async def confirm_remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_T
     query = upd.callback_query
     await query.answer()
     
-    order_num = query.data[19:]  # "confirm_remove_items_RVN-XXX"
+    order_num = query.data[19:]
     
     if ctx.user_data.get('remove_items_order') != order_num:
         await query.edit_message_text("❌ Сессия истекла. Начните заново.")
@@ -2124,7 +2199,7 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
     query = upd.callback_query
     await query.answer()
     
-    order_num = query.data[19:]  # "confirm_user_cancel_RVN-XXX"
+    order_num = query.data[19:]
     uid = query.from_user.id
     
     order = get_order(order_num)
@@ -2206,10 +2281,14 @@ async def garage_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for car in cars:
         vin, description, comment, created = car
         desc = description if description else "Описание не указано"
-        text += f"🔹 **{vin}**\n"
-        text += f"   📝 {desc}\n"
-        if comment:
-            text += f"   💬 *{comment}*\n"
+        vin_escaped = escape_markdown(vin)
+        desc_escaped = escape_markdown(desc)
+        comment_escaped = escape_markdown(comment) if comment else ""
+        
+        text += f"🔹 **{vin_escaped}**\n"
+        text += f"   📝 {desc_escaped}\n"
+        if comment_escaped:
+            text += f"   💬 *{comment_escaped}*\n"
         text += f"   📅 Добавлен: {created[:10]}\n\n"
         
         keyboard.append([InlineKeyboardButton(f"✏️ Комментарий", callback_data=f"garage_comment_{vin}")])
@@ -2439,7 +2518,7 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
     
     for o in orders[:10]:
         order_num = clean_order_number(o[0])
-        user_name = o[1][:15] if len(o[1]) > 15 else o[1]
+        user_name = escape_markdown(o[1][:15] if len(o[1]) > 15 else o[1])
         status_text = o[2] if len(o) > 2 else ''
         icon = get_status_icon(status_text)
         
@@ -2457,6 +2536,7 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
         await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 @require_manager
+@safe_markdown
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработка админ-панели"""
     query = upd.callback_query
@@ -2527,16 +2607,27 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         
         total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+        
+        # Экранируем переменные
+        user_name = escape_markdown(order.get('user_name', ''))
+        phone = escape_markdown(order.get('phone', 'не указан'))
+        style_city = escape_markdown(order.get('style_city', 'не указан'))
+        style_highway = escape_markdown(order.get('style_highway', 'не указан'))
+        city = escape_markdown(order.get('city', 'не указан'))
+        address = escape_markdown(order.get('delivery_address', 'не указан'))
+        delivery_type = escape_markdown(order.get('delivery_type', 'не указана'))
+        status_text = escape_markdown(order.get('status_text', 'неизвестен'))
+        
         text = (f"📋 **ЗАКАЗ {order.get('order_number', '')}**\n\n"
-                f"👤 {order.get('user_name', '')}\n"
-                f"📞 {order.get('phone', 'не указан')}\n"
-                f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
-                f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
-                f"🏙️ Город: {order.get('city', 'не указан')}\n"
-                f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
-                f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
+                f"👤 {user_name}\n"
+                f"📞 {phone}\n"
+                f"🏙️ Стиль город: {style_city}\n"
+                f"🛣️ Стиль трасса: {style_highway}\n"
+                f"🏙️ Город: {city}\n"
+                f"📍 Адрес: {address}\n"
+                f"🚚 Доставка: {delivery_type} | {order.get('delivery_price', 0)} руб.\n"
                 f"💰 Сумма: {total_sum} руб.\n"
-                f"📦 Статус: {order.get('status_text', 'неизвестен')}")
+                f"📦 Статус: {status_text}")
         
         kb = [
             [InlineKeyboardButton("💰 Оплачен", callback_data=f"pay_{order_num}")],
@@ -2582,21 +2673,26 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             action, old_val, new_val, comment, created = change
             text += f"🕐 {created[:16]}\n"
             if action == 'remove_items':
-                text += f"   🗑️ Удалены товары: {old_val}\n"
+                text += f"   🗑️ Удалены товары: {escape_markdown(old_val)}\n"
             elif action == 'add_item':
-                text += f"   ➕ Добавлен товар: {new_val}\n"
+                text += f"   ➕ Добавлен товар: {escape_markdown(new_val)}\n"
             elif action == 'change_price':
-                text += f"   💰 Изменена цена: {old_val} → {new_val}\n"
+                text += f"   💰 Изменена цена: {escape_markdown(old_val)} → {escape_markdown(new_val)}\n"
             elif action == 'cancel_by_user':
                 text += f"   ❌ Отменён пользователем\n"
             else:
-                text += f"   📝 {action}: {new_val}\n"
+                text += f"   📝 {action}: {escape_markdown(new_val)}\n"
             if comment:
-                text += f"   💬 Комментарий: {comment}\n"
+                text += f"   💬 Комментарий: {escape_markdown(comment)}\n"
             text += "\n"
         
+        parts = split_long_message(text, 4000)
+        await query.edit_message_text(parts[0], parse_mode='Markdown')
+        for part in parts[1:]:
+            await query.message.reply_text(part, parse_mode='Markdown')
+        
         kb = [[InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"admin_order_{order_num}")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
     
     # ========== ДЕТАЛИ ЗАКАЗА ==========
@@ -2607,316 +2703,55 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Заказ не найден")
             return
         
+        user_name = escape_markdown(order.get('user_name', 'Не указан'))
+        phone = escape_markdown(order.get('phone', 'Не указан'))
+        vin = escape_markdown(order.get('vin', 'Не указан'))
+        mileage = escape_markdown(order.get('mileage', 'Не указан'))
+        style_city = escape_markdown(order.get('style_city', 'Не указан'))
+        style_highway = escape_markdown(order.get('style_highway', 'Не указан'))
+        city = escape_markdown(order.get('city', 'Не указан'))
+        address = escape_markdown(order.get('delivery_address', 'Не указан'))
+        delivery_type = escape_markdown(order.get('delivery_type', 'Не указана'))
+        status_text = escape_markdown(order.get('status_text', 'Неизвестен'))
+        created_at = escape_markdown(order.get('created_at', 'Не указана'))
+        tracking = escape_markdown(order.get('tracking_number', ''))
+        selected_products = escape_markdown(order.get('selected_products', '')[:500])
+        needed_parts = escape_markdown(order.get('needed_parts', '')[:500])
+        final_order = escape_markdown(order.get('final_order', '')[:500])
+        
         text = (f"🔍 **ПОЛНАЯ ИНФОРМАЦИЯ О ЗАКАЗЕ {order_num}**\n\n"
-                f"👤 Клиент: {order.get('user_name', 'Не указан')}\n"
-                f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
-                f"🚗 VIN: {order.get('vin', 'Не указан')}\n"
-                f"📊 Пробег: {order.get('mileage', 'Не указан')} км\n"
-                f"🏙️ Стиль город: {order.get('style_city', 'Не указан')}\n"
-                f"🛣️ Стиль трасса: {order.get('style_highway', 'Не указан')}\n"
-                f"🏙️ Город: {order.get('city', 'Не указан')}\n"
-                f"📍 Адрес: {order.get('delivery_address', 'Не указан')}\n"
-                f"🚚 Доставка: {order.get('delivery_type', 'Не указана')} | {order.get('delivery_price', 0)} руб.\n"
+                f"👤 Клиент: {user_name}\n"
+                f"📞 Телефон: {phone}\n"
+                f"🚗 VIN: {vin}\n"
+                f"📊 Пробег: {mileage} км\n"
+                f"🏙️ Стиль город: {style_city}\n"
+                f"🛣️ Стиль трасса: {style_highway}\n"
+                f"🏙️ Город: {city}\n"
+                f"📍 Адрес: {address}\n"
+                f"🚚 Доставка: {delivery_type} | {order.get('delivery_price', 0)} руб.\n"
                 f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
-                f"📦 Статус: {order.get('status_text', 'Неизвестен')}\n"
-                f"📅 Создан: {order.get('created_at', 'Не указана')}")
+                f"📦 Статус: {status_text}\n"
+                f"📅 Создан: {created_at}")
         
-        if order.get('tracking_number'):
-            text += f"\n📮 Трек-номер: {order.get('tracking_number')}"
+        if tracking:
+            text += f"\n📮 Трек-номер: {tracking}"
         
-        if order.get('selected_products'):
-            text += f"\n\n📦 **ПОДБОР МЕНЕДЖЕРА:**\n{order.get('selected_products')[:500]}"
+        if selected_products:
+            text += f"\n\n📦 **ПОДБОР МЕНЕДЖЕРА:**\n{selected_products}"
         
-        if order.get('needed_parts'):
-            text += f"\n\n📝 **ЗАПЧАСТИ КЛИЕНТА:**\n{order.get('needed_parts')[:500]}"
+        if needed_parts:
+            text += f"\n\n📝 **ЗАПЧАСТИ КЛИЕНТА:**\n{needed_parts}"
         
-        if order.get('final_order') and order.get('final_order') not in [None, 'None', '[]', '{}']:
-            text += f"\n\n✅ **ВЫБРАННЫЕ ЗАПЧАСТИ:**\n{order.get('final_order')[:500]}"
+        if final_order and final_order not in ['', 'None', '[]', '{}']:
+            text += f"\n\n✅ **ВЫБРАННЫЕ ЗАПЧАСТИ:**\n{final_order}"
+        
+        parts = split_long_message(text, 4000)
+        await query.edit_message_text(parts[0], parse_mode='Markdown')
+        for part in parts[1:]:
+            await query.message.reply_text(part, parse_mode='Markdown')
         
         kb = [[InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"admin_order_{order_num}")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-        return
-    
-    # ========== РЕДАКТИРОВАНИЕ ТОВАРОВ ДЛЯ АДМИНА ==========
-    if data.startswith("admin_edit_items_"):
-        order_num = data[17:]
-        order = get_order(order_num)
-        if not order:
-            await query.edit_message_text("❌ Заказ не найден")
-            return
-        
-        final_order = order.get('final_order', '')
-        
-        kb = [
-            [InlineKeyboardButton("🗑️ Удалить товары", callback_data=f"admin_remove_items_{order_num}")],
-            [InlineKeyboardButton("➕ Добавить товар", callback_data=f"admin_add_item_{order_num}")],
-            [InlineKeyboardButton("💰 Изменить цену", callback_data=f"admin_change_price_{order_num}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data=f"admin_order_{order_num}")]
-        ]
-        
-        text = f"✏️ **РЕДАКТИРОВАНИЕ ЗАКАЗА {order_num}**\n\n"
-        text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n\n"
-        text += "**Товары в заказе:**\n"
-        
-        if final_order and final_order not in [None, 'None', '[]', '{}']:
-            try:
-                selected_parts = ast.literal_eval(final_order)
-                if isinstance(selected_parts, list) and selected_parts:
-                    for i, part in enumerate(selected_parts):
-                        if isinstance(part, dict):
-                            part_name = part.get('name', 'неизвестно')
-                            part_price = part.get('price', 0)
-                            text += f"{i+1}. {part_name} — {part_price} руб.\n"
-                else:
-                    text += "Нет товаров\n"
-            except:
-                text += "Ошибка отображения\n"
-        else:
-            text += "Нет товаров\n"
-        
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-        return
-    
-    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
-    if data.startswith("admin_remove_items_"):
-        order_num = data[18:]
-        order = get_order(order_num)
-        if not order:
-            await query.edit_message_text("❌ Заказ не найден")
-            return
-        
-        final_order = order.get('final_order', '')
-        if not final_order or final_order in [None, 'None', '[]', '{}']:
-            await query.edit_message_text("❌ В заказе нет товаров для удаления")
-            return
-        
-        try:
-            selected_parts = ast.literal_eval(final_order)
-            if not isinstance(selected_parts, list) or not selected_parts:
-                await query.edit_message_text("❌ Нет товаров для удаления")
-                return
-            
-            ctx.user_data['admin_remove_order'] = order_num
-            ctx.user_data['admin_remove_parts'] = selected_parts.copy()
-            ctx.user_data['admin_remove_selected'] = set()
-            
-            kb = []
-            for i, part in enumerate(selected_parts):
-                if isinstance(part, dict):
-                    part_name = part.get('name', 'Неизвестно')[:35]
-                    part_price = part.get('price', 0)
-                    kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
-                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
-            
-            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
-            kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
-            
-            await query.edit_message_text(
-                f"🗑️ **УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}**\n\n"
-                f"Нажмите на товар, чтобы отметить его для удаления.\n\n"
-                f"⬜ - товар остаётся\n"
-                f"✅ - товар будет удалён",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
-        return
-    
-    if data.startswith("admin_toggle_item_"):
-        await query.answer()
-        parts = data.split('_')
-        order_num = parts[3]
-        item_idx = int(parts[4])
-        
-        if ctx.user_data.get('admin_remove_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла")
-            return
-        
-        selected = ctx.user_data.get('admin_remove_selected', set())
-        if item_idx in selected:
-            selected.remove(item_idx)
-        else:
-            selected.add(item_idx)
-        ctx.user_data['admin_remove_selected'] = selected
-        
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
-        kb = []
-        for i, part in enumerate(selected_parts):
-            if isinstance(part, dict):
-                part_name = part.get('name', 'Неизвестно')[:35]
-                part_price = part.get('price', 0)
-                check = "✅" if i in selected else "⬜"
-                kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
-                                               callback_data=f"admin_toggle_item_{order_num}_{i}")])
-        
-        kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
-        kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
-        
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
-        return
-    
-    if data.startswith("admin_confirm_remove_"):
-        order_num = data[19:]
-        
-        if ctx.user_data.get('admin_remove_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла")
-            return
-        
-        selected_items = ctx.user_data.get('admin_remove_selected', set())
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
-        
-        if not selected_items:
-            await query.edit_message_text("❌ Не выбрано ни одного товара")
-            return
-        
-        # Проверка: нельзя удалить все товары
-        if len(selected_items) >= len(selected_parts):
-            await query.edit_message_text(
-                "❌ **Нельзя удалить все товары из заказа!**\n\n"
-                "В заказе должен остаться хотя бы один товар.",
-                parse_mode='Markdown'
-            )
-            return
-        
-        remaining_parts = []
-        removed_names = []
-        
-        for i, part in enumerate(selected_parts):
-            if i not in selected_items:
-                remaining_parts.append(part)
-            else:
-                if isinstance(part, dict):
-                    removed_names.append(part.get('name', 'Товар'))
-        
-        new_total = sum(p.get('price', 0) for p in remaining_parts if isinstance(p, dict))
-        delivery_price = get_order(order_num).get('delivery_price', 0)
-        
-        update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
-        
-        # Сохраняем историю
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            c = conn.cursor()
-            c.execute('''INSERT INTO order_changes (order_number, user_id, action, old_value, new_value, comment, created_at)
-                         VALUES (?,?,?,?,?,?,?)''',
-                      (order_num, MANAGER_ID, 'remove_items', ', '.join(removed_names), 
-                       f"Удалено {len(selected_items)} товаров", "Удаление товаров администратором", 
-                       datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            conn.commit()
-        except:
-            pass
-        finally:
-            conn.close()
-        
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(
-                order['user_id'],
-                text=f"✏️ **Заказ {order_num} изменён менеджером!**\n\n"
-                     f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
-                     f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-                     f"По вопросам обращайтесь к менеджеру.",
-                parse_mode='Markdown'
-            )
-        
-        await query.edit_message_text(
-            f"✅ **Товары удалены!**\n\n"
-            f"📦 Заказ: {order_num}\n"
-            f"🗑️ Удалено: {len(selected_items)} товаров\n"
-            f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-            f"Клиент получил уведомление.",
-            parse_mode='Markdown'
-        )
-        
-        ctx.user_data.pop('admin_remove_order', None)
-        ctx.user_data.pop('admin_remove_parts', None)
-        ctx.user_data.pop('admin_remove_selected', None)
-        return
-    
-    # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
-    if data.startswith("admin_add_item_"):
-        order_num = data[16:]
-        ctx.user_data['admin_add_item_order'] = order_num
-        await query.edit_message_text(
-            f"➕ **ДОБАВЛЕНИЕ ТОВАРА В ЗАКАЗ {order_num}**\n\n"
-            f"Введите название товара:",
-            parse_mode='Markdown'
-        )
-        return AdminAddItemStates.NAME
-    
-    # ========== АДМИН МЕНЯЕТ ЦЕНУ ==========
-    if data.startswith("admin_change_price_"):
-        order_num = data[18:]
-        order = get_order(order_num)
-        if not order:
-            await query.edit_message_text("❌ Заказ не найден")
-            return
-        
-        final_order = order.get('final_order', '')
-        if not final_order or final_order in [None, 'None', '[]', '{}']:
-            await query.edit_message_text("❌ В заказе нет товаров для изменения цены")
-            return
-        
-        try:
-            selected_parts = ast.literal_eval(final_order)
-            if not isinstance(selected_parts, list) or not selected_parts:
-                await query.edit_message_text("❌ Нет товаров для изменения цены")
-                return
-            
-            ctx.user_data['admin_change_price_order'] = order_num
-            ctx.user_data['admin_change_price_parts'] = selected_parts.copy()
-            
-            kb = []
-            for i, part in enumerate(selected_parts):
-                if isinstance(part, dict):
-                    part_name = part.get('name', 'Неизвестно')[:35]
-                    part_price = part.get('price', 0)
-                    kb.append([InlineKeyboardButton(f"💰 {part_name} — {part_price} руб.", 
-                                                   callback_data=f"admin_select_price_item_{order_num}_{i}")])
-            
-            kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
-            
-            await query.edit_message_text(
-                f"💰 **ИЗМЕНЕНИЕ ЦЕНЫ ТОВАРА В ЗАКАЗЕ {order_num}**\n\n"
-                f"Выберите товар, цену которого хотите изменить:",
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.error(f"Ошибка: {e}")
-            await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
-        return
-    
-    if data.startswith("admin_select_price_item_"):
-        await query.answer()
-        parts = data.split('_')
-        order_num = parts[4]
-        item_idx = int(parts[5])
-        
-        if ctx.user_data.get('admin_change_price_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла")
-            return
-        
-        ctx.user_data['admin_change_price_idx'] = item_idx
-        selected_parts = ctx.user_data.get('admin_change_price_parts', [])
-        
-        if item_idx < len(selected_parts) and isinstance(selected_parts[item_idx], dict):
-            part_name = selected_parts[item_idx].get('name', 'Товар')
-            part_price = selected_parts[item_idx].get('price', 0)
-            
-            await query.edit_message_text(
-                f"💰 **ИЗМЕНЕНИЕ ЦЕНЫ ТОВАРА**\n\n"
-                f"📦 Заказ: {order_num}\n"
-                f"📝 Товар: {part_name}\n"
-                f"💵 Текущая цена: {part_price} руб.\n\n"
-                f"Введите новую цену (целое число, руб.):",
-                parse_mode='Markdown'
-            )
-            return AdminChangePriceStates.NEW_PRICE
-        else:
-            await query.edit_message_text("❌ Товар не найден")
+        await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return
     
     # ========== ИЗМЕНЕНИЕ ДОСТАВКИ ==========
@@ -3586,9 +3421,48 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
+    # ConversationHandler для гаража
+    garage_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(garage_add_start, pattern="^garage_add$")],
+        states={
+            GarageStates.VIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_vin)],
+            GarageStates.DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_get_description)]
+        },
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=300
+    )
+    
+    # ConversationHandler для комментариев гаража
+    garage_comment_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(garage_comment_start, pattern="^garage_comment_")],
+        states={GarageStates.DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_comment_input)]},
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=300
+    )
+    
+    # ConversationHandler для сохранения VIN
+    save_vin_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(save_vin_callback, pattern="^save_vin_")],
+        states={SaveStates.COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_vin_comment_input)]},
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=300
+    )
+    
+    # ConversationHandler для списания бонусов
+    spend_bonus_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(spend_bonus_custom_callback, pattern="^spend_bonus_custom_")],
+        states={BonusStates.SPEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, spend_bonus_custom_input)]},
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=300
+    )
+    
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(order_conv)
+    app.add_handler(garage_conv)
+    app.add_handler(garage_comment_conv)
+    app.add_handler(save_vin_conv)
+    app.add_handler(spend_bonus_conv)
     app.add_handler(remove_items_conv)
     app.add_handler(admin_add_item_conv)
     app.add_handler(admin_change_price_conv)
