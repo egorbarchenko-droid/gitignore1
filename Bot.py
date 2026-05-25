@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 9.0.0 - FULLY FIXED WITH ALL FEATURES
+Версия: 10.0.0 - FULLY FIXED WITH NO MARKDOWN ERRORS
 """
 
 import os
@@ -185,42 +185,6 @@ confirm_order_kb = ReplyKeyboardMarkup([
 ], resize_keyboard=True)
 
 # ========== БЕЗОПАСНЫЕ ФУНКЦИИ ==========
-
-def escape_markdown(text: str) -> str:
-    """Экранирование специальных символов для Markdown V2"""
-    if text is None:
-        return ""
-    text = str(text)
-    # Специальные символы, которые нужно экранировать в Markdown V2
-    special_chars = r'_*[]()~`>#+-=|{}.!'
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    return text
-
-def split_long_message(text: str, max_length: int = 4000) -> List[str]:
-    """Разбивает длинное сообщение на части"""
-    if len(text) <= max_length:
-        return [text]
-    
-    parts = []
-    lines = text.split('\n')
-    current_part = ""
-    
-    for line in lines:
-        if len(current_part) + len(line) + 1 <= max_length:
-            if current_part:
-                current_part += "\n" + line
-            else:
-                current_part = line
-        else:
-            if current_part:
-                parts.append(current_part)
-            current_part = line
-    
-    if current_part:
-        parts.append(current_part)
-    
-    return parts
 
 def check_rate_limit(user_id: int) -> bool:
     """Проверка rate limiting"""
@@ -799,7 +763,7 @@ def get_bonus_spend_details(order: Dict) -> str:
     total_sum = total_parts + delivery_price
     has_ravenol, has_other, ravenol_sum, other_sum = has_ravenol_only(order)
     
-    details = f"💰 **Детали заказа:**\n"
+    details = f"💰 Детали заказа:\n"
     details += f"• Сумма запчастей: {total_parts} руб.\n"
     
     if ravenol_sum > 0:
@@ -808,13 +772,13 @@ def get_bonus_spend_details(order: Dict) -> str:
         details += f"• Сумма для бонусов: {other_sum} руб.\n"
     
     details += f"• Доставка: {delivery_price} руб. (❌ бонусы не списываются)\n"
-    details += f"• **Итого к оплате:** {total_sum} руб.\n\n"
+    details += f"• Итого к оплате: {total_sum} руб.\n\n"
     
     if eligible_sum > 0:
         max_bonus = int(eligible_sum * MAX_BONUS_SPEND_PERCENT / 100)
-        details += f"🎁 **Максимум списания бонусами:** {max_bonus} руб. ({MAX_BONUS_SPEND_PERCENT}% от {eligible_sum} руб.)\n"
+        details += f"🎁 Максимум списания бонусами: {max_bonus} руб. ({MAX_BONUS_SPEND_PERCENT}% от {eligible_sum} руб.)\n"
     else:
-        details += f"❌ **Нет товаров для списания бонусов**\n"
+        details += f"❌ Нет товаров для списания бонусов\n"
     
     return details
 
@@ -998,27 +962,6 @@ def rate_limit(func):
         return await func(upd, ctx, *args, **kwargs)
     return wrapper
 
-def safe_markdown(func):
-    """Декоратор для безопасной отправки Markdown сообщений"""
-    @wraps(func)
-    async def wrapper(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        try:
-            return await func(upd, ctx, *args, **kwargs)
-        except Exception as e:
-            if "can't parse entities" in str(e):
-                logger.warning(f"Markdown error in {func.__name__}: {e}")
-                if upd.callback_query:
-                    await upd.callback_query.edit_message_text(
-                        "❌ Ошибка форматирования сообщения. Пожалуйста, попробуйте ещё раз."
-                    )
-                else:
-                    await upd.message.reply_text(
-                        "❌ Ошибка форматирования сообщения. Пожалуйста, попробуйте ещё раз."
-                    )
-            else:
-                raise
-    return wrapper
-
 # ========== ОСНОВНЫЕ КОМАНДЫ ==========
 
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1040,17 +983,17 @@ async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             finally:
                 conn.close()
     
-    text = ("🏎️ **Добро пожаловать в магазин автозапчастей!**\n\n"
+    text = ("🏎️ Добро пожаловать в магазин автозапчастей!\n\n"
             "Что я умею:\n"
-            "🛒 **Новый заказ** - подбор запчастей по вашему автомобилю\n"
-            "🚗 **Мой гараж** - храните VIN и описание автомобилей\n"
-            "📦 **Мои заказы** - история ваших заказов\n"
-            "🎁 **Бонусы** - накапливайте бонусы от покупок\n"
-            "🔗 **Рефералы** - приглашайте друзей и получайте бонусы\n"
-            "🚚 **Доставка** - расчёт стоимости доставки\n\n"
-            "Нажмите 🛒 **Новый заказ**, чтобы начать!")
+            "🛒 Новый заказ - подбор запчастей по вашему автомобилю\n"
+            "🚗 Мой гараж - храните VIN и описание автомобилей\n"
+            "📦 Мои заказы - история ваших заказов\n"
+            "🎁 Бонусы - накапливайте бонусы от покупок\n"
+            "🔗 Рефералы - приглашайте друзей и получайте бонусы\n"
+            "🚚 Доставка - расчёт стоимости доставки\n\n"
+            "Нажмите 🛒 Новый заказ, чтобы начать!")
     
-    await upd.message.reply_text(text, reply_markup=main_menu, parse_mode='Markdown')
+    await upd.message.reply_text(text, reply_markup=main_menu)
 
 # ========== НОВЫЙ ЗАКАЗ ==========
 
@@ -1070,9 +1013,8 @@ async def new_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(display_text, callback_data=f"order_auto_{vin}")])
         
         await upd.message.reply_text(
-            "🔧 **ВЫБЕРИТЕ АВТОМОБИЛЬ** из гаража или введите VIN вручную:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
+            "🔧 ВЫБЕРИТЕ АВТОМОБИЛЬ из гаража или введите VIN вручную:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return OrderStates.VIN
     
@@ -1091,7 +1033,7 @@ async def order_auto_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("order_auto_"):
         vin = query.data[11:]
         ctx.user_data['vin'] = vin
-        await query.edit_message_text(f"🚗 Выбран автомобиль: `{vin}`\n\n📊 Теперь введите пробег (км):", parse_mode='Markdown')
+        await query.edit_message_text(f"🚗 Выбран автомобиль: {vin}\n\n📊 Теперь введите пробег (км):")
         return OrderStates.MILEAGE
     
     return OrderStates.VIN
@@ -1102,7 +1044,7 @@ async def get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     vin = upd.message.text.upper().strip()
     
     if not validate_vin(vin):
-        await upd.message.reply_text("❌ **Неверный VIN**\n\nVIN должен содержать 17 символов (только буквы и цифры, без I, O, Q).\nПопробуйте ещё раз:")
+        await upd.message.reply_text("❌ Неверный VIN\n\nVIN должен содержать 17 символов (только буквы и цифры, без I, O, Q).\nПопробуйте ещё раз:")
         return OrderStates.VIN
     
     ctx.user_data['vin'] = vin
@@ -1121,19 +1063,19 @@ async def get_mileage(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await upd.message.reply_text("❌ Пожалуйста, введите число (пробег в км):")
         return OrderStates.MILEAGE
     
-    await upd.message.reply_text("🏙️ **Стиль вождения в городе:**", reply_markup=city_style_kb, parse_mode='Markdown')
+    await upd.message.reply_text("🏙️ Стиль вождения в городе:", reply_markup=city_style_kb)
     return OrderStates.STYLE_CITY
 
 async def get_style_city(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение стиля вождения в городе"""
     ctx.user_data['style_city'] = upd.message.text
-    await upd.message.reply_text("🛣️ **Стиль вождения на трассе:**", reply_markup=highway_style_kb, parse_mode='Markdown')
+    await upd.message.reply_text("🛣️ Стиль вождения на трассе:", reply_markup=highway_style_kb)
     return OrderStates.STYLE_HIGHWAY
 
 async def get_style_highway(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение стиля вождения на трассе"""
     ctx.user_data['style_highway'] = upd.message.text
-    await upd.message.reply_text("🚚 **Способ доставки:**", reply_markup=delivery_type_kb, parse_mode='Markdown')
+    await upd.message.reply_text("🚚 Способ доставки:", reply_markup=delivery_type_kb)
     return OrderStates.DELIVERY_TYPE
 
 async def get_delivery_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1142,15 +1084,15 @@ async def get_delivery_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['delivery_type'] = choice
     
     if choice == "Курьером":
-        await upd.message.reply_text("📍 Введите **ПОЛНЫЙ АДРЕС** доставки\n\nПример: г. Москва, ул. Тверская, д. 15, кв. 78", parse_mode='Markdown')
+        await upd.message.reply_text("📍 Введите ПОЛНЫЙ АДРЕС доставки\n\nПример: г. Москва, ул. Тверская, д. 15, кв. 78")
         return OrderStates.ADDRESS
     elif choice == "Самовывоз":
         ctx.user_data['delivery_price'] = 0
-        await upd.message.reply_text("📍 **Самовывоз**\n\nДоступные станции:\n• Метро Давыдково\n• Метро Строгино\n• Метро Южная\n\nВведите адрес самовывоза:", parse_mode='Markdown')
+        await upd.message.reply_text("📍 Самовывоз\n\nДоступные станции:\n• Метро Давыдково\n• Метро Строгино\n• Метро Южная\n\nВведите адрес самовывоза:")
         return OrderStates.ADDRESS
     else:
         ctx.user_data['delivery_price'] = 0
-        await upd.message.reply_text("🚛 **Сторонняя фирма** (стоимость рассчитает менеджер)\n\n📍 Введите адрес доставки:", parse_mode='Markdown')
+        await upd.message.reply_text("🚛 Сторонняя фирма (стоимость рассчитает менеджер)\n\n📍 Введите адрес доставки:")
         return OrderStates.ADDRESS
 
 @rate_limit
@@ -1171,15 +1113,14 @@ async def get_address(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         price = calc_delivery_price(distance)
         ctx.user_data['delivery_price'] = price
         await upd.message.reply_text(
-            f"📍 **Адрес:** {full_address}\n"
-            f"🏙️ **Город:** {city}\n"
-            f"📏 **Расстояние от МКАД:** {distance} км\n"
-            f"🚚 **Стоимость доставки:** {price} руб.\n\n"
-            f"📞 Введите ваш контактный телефон:",
-            parse_mode='Markdown'
+            f"📍 Адрес: {full_address}\n"
+            f"🏙️ Город: {city}\n"
+            f"📏 Расстояние от МКАД: {distance} км\n"
+            f"🚚 Стоимость доставки: {price} руб.\n\n"
+            f"📞 Введите ваш контактный телефон:"
         )
     else:
-        await upd.message.reply_text(f"📍 **Адрес:** {full_address}\n\n📞 Введите ваш контактный телефон:", parse_mode='Markdown')
+        await upd.message.reply_text(f"📍 Адрес: {full_address}\n\n📞 Введите ваш контактный телефон:")
     
     return OrderStates.PHONE
 
@@ -1192,7 +1133,7 @@ async def get_phone(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return OrderStates.PHONE
     
     ctx.user_data['phone'] = phone
-    await upd.message.reply_text("🔧 **Выберите узел запчасти:**", reply_markup=part_node_kb, parse_mode='Markdown')
+    await upd.message.reply_text("🔧 Выберите узел запчасти:", reply_markup=part_node_kb)
     return OrderStates.PART_NODE
 
 async def get_part_node(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1200,16 +1141,15 @@ async def get_part_node(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['part_node'] = upd.message.text
     
     if upd.message.text in AXLE_REQUIRED_NODES:
-        await upd.message.reply_text("🔧 **Выберите ось:**", reply_markup=axle_kb, parse_mode='Markdown')
+        await upd.message.reply_text("🔧 Выберите ось:", reply_markup=axle_kb)
         return OrderStates.AXLE
     else:
         ctx.user_data['axle'] = "Не требуется"
         await upd.message.reply_text(
-            "🔧 **Какие запчасти нужны?** (каждая с новой строки)\n\n"
+            "🔧 Какие запчасти нужны? (каждая с новой строки)\n\n"
             "Пример:\n"
             "Колодки тормозные\n"
-            "Диски тормозные",
-            parse_mode='Markdown'
+            "Диски тормозные"
         )
         return OrderStates.PARTS
 
@@ -1217,11 +1157,10 @@ async def get_axle(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение оси"""
     ctx.user_data['axle'] = upd.message.text
     await upd.message.reply_text(
-        "🔧 **Какие запчасти нужны?** (каждая с новой строки)\n\n"
+        "🔧 Какие запчасти нужны? (каждая с новой строки)\n\n"
         "Пример:\n"
         "Колодки тормозные передние\n"
-        "Диски тормозные задние",
-        parse_mode='Markdown'
+        "Диски тормозные задние"
     )
     return OrderStates.PARTS
 
@@ -1245,8 +1184,8 @@ async def get_parts(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = ctx.user_data
     delivery_price = data.get('delivery_price', 500)
     
-    summary = (f"📋 **ПРОВЕРЬТЕ ЗАКАЗ**\n\n"
-               f"🚗 VIN: `{data.get('vin', 'не указан')}`\n"
+    summary = (f"📋 ПРОВЕРЬТЕ ЗАКАЗ\n\n"
+               f"🚗 VIN: {data.get('vin', 'не указан')}\n"
                f"📊 Пробег: {data.get('mileage', 'не указан')} км\n"
                f"🏎️ Стиль город: {data.get('style_city', 'не указан')}\n"
                f"🛣️ Стиль трасса: {data.get('style_highway', 'не указан')}\n"
@@ -1257,10 +1196,10 @@ async def get_parts(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                f"🔧 Узел: {data.get('part_node', 'не указан')}\n"
                f"🔧 Ось: {data.get('axle', 'не указана')}\n"
                f"📝 Запчасти:\n{data.get('needed_parts', 'не указаны')}\n\n"
-               f"💰 **Доставка: {delivery_price} руб.**\n\n"
-               "✅ Всё верно? Нажмите **Готово** или **Редактировать**")
+               f"💰 Доставка: {delivery_price} руб.\n\n"
+               "✅ Всё верно? Нажмите Готово или Редактировать")
     
-    await upd.message.reply_text(summary, reply_markup=confirm_order_kb, parse_mode='Markdown')
+    await upd.message.reply_text(summary, reply_markup=confirm_order_kb)
     return OrderStates.CONFIRM
 
 async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1303,21 +1242,19 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("❌ Нет, спасибо", callback_data="no_save_vin")]
                 ])
                 await upd.message.reply_text(
-                    f"🚗 Хотите сохранить автомобиль с VIN `{vin}` в ваш гараж?\n\n"
+                    f"🚗 Хотите сохранить автомобиль с VIN {vin} в ваш гараж?\n\n"
                     f"В следующий раз вам не придётся вводить VIN заново!",
-                    reply_markup=kb,
-                    parse_mode='Markdown'
+                    reply_markup=kb
                 )
         
         await upd.message.reply_text(
-            f"✅ **ЗАКАЗ #{order_num} ПРИНЯТ!**\n\n"
+            f"✅ ЗАКАЗ #{order_num} ПРИНЯТ!\n\n"
             f"📋 Детали заказа:\n"
             f"🚚 Доставка: {data.get('delivery_price', 500)} руб.\n"
             f"📍 Адрес: {data.get('delivery_address', 'не указан')}\n\n"
             f"🔧 Менеджер скоро свяжется с вами для уточнения деталей.\n\n"
             f"Вы можете вернуться в главное меню:",
-            reply_markup=main_menu,
-            parse_mode='Markdown'
+            reply_markup=main_menu
         )
         return ConversationHandler.END
     
@@ -1327,11 +1264,10 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("❌ Нет, продолжить", callback_data="cancel_edit")]
         ])
         await upd.message.reply_text(
-            "⚠️ **Внимание!**\n\n"
+            "⚠️ Внимание!\n\n"
             "При редактировании все введённые данные будут потеряны.\n"
             "Вы уверены, что хотите начать заказ заново?",
-            reply_markup=kb,
-            parse_mode='Markdown'
+            reply_markup=kb
         )
         return OrderStates.CONFIRM
     
@@ -1345,9 +1281,8 @@ async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query.data == "confirm_edit":
         ctx.user_data.clear()
         await query.edit_message_text(
-            "✏️ Давайте начнём заказ заново. Нажмите 🛒 **Новый заказ**",
-            reply_markup=main_menu,
-            parse_mode='Markdown'
+            "✏️ Давайте начнём заказ заново. Нажмите 🛒 Новый заказ",
+            reply_markup=main_menu
         )
         return ConversationHandler.END
     else:
@@ -1364,8 +1299,8 @@ async def continue_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = ctx.user_data
     delivery_price = data.get('delivery_price', 500)
     
-    summary = (f"📋 **ПРОВЕРЬТЕ ЗАКАЗ**\n\n"
-               f"🚗 VIN: `{data.get('vin', 'не указан')}`\n"
+    summary = (f"📋 ПРОВЕРЬТЕ ЗАКАЗ\n\n"
+               f"🚗 VIN: {data.get('vin', 'не указан')}\n"
                f"📊 Пробег: {data.get('mileage', 'не указан')} км\n"
                f"🏎️ Стиль город: {data.get('style_city', 'не указан')}\n"
                f"🛣️ Стиль трасса: {data.get('style_highway', 'не указан')}\n"
@@ -1376,10 +1311,10 @@ async def continue_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                f"🔧 Узел: {data.get('part_node', 'не указан')}\n"
                f"🔧 Ось: {data.get('axle', 'не указана')}\n"
                f"📝 Запчасти: Без запчастей (уточнить у менеджера)\n\n"
-               f"💰 **Доставка: {delivery_price} руб.**\n\n"
-               "✅ Всё верно? Нажмите **Готово** или **Редактировать**")
+               f"💰 Доставка: {delivery_price} руб.\n\n"
+               "✅ Всё верно? Нажмите Готово или Редактировать")
     
-    await query.edit_message_text(summary, reply_markup=confirm_order_kb, parse_mode='Markdown')
+    await query.edit_message_text(summary, reply_markup=confirm_order_kb)
     return OrderStates.CONFIRM
 
 async def cancel_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1392,9 +1327,8 @@ async def cancel_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ Нет, продолжить", callback_data="continue_order")]
     ])
     await query.edit_message_text(
-        "⚠️ **Вы уверены, что хотите отменить создание заказа?**",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        "⚠️ Вы уверены, что хотите отменить создание заказа?",
+        reply_markup=kb
     )
 
 async def confirm_cancel_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1424,12 +1358,11 @@ async def save_vin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     ctx.user_data['save_vin'] = vin
     await query.edit_message_text(
-        f"🚗 **СОХРАНЕНИЕ АВТОМОБИЛЯ**\n\n"
-        f"VIN: `{vin}`\n\n"
+        f"🚗 СОХРАНЕНИЕ АВТОМОБИЛЯ\n\n"
+        f"VIN: {vin}\n\n"
         f"Добавьте комментарий (например, «зимняя резина», «жена», «служебный»)\n"
         f"Максимум 100 символов.\n\n"
-        f"Или отправьте '-' чтобы пропустить:",
-        parse_mode='Markdown'
+        f"Или отправьте '-' чтобы пропустить:"
     )
     return SaveStates.COMMENT
 
@@ -1452,11 +1385,11 @@ async def save_vin_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if save_car(user_id, vin, "", comment):
         if comment:
-            await upd.message.reply_text(f"✅ Автомобиль `{vin}` сохранён в гараж!\n💬 Комментарий: {comment}", parse_mode='Markdown')
+            await upd.message.reply_text(f"✅ Автомобиль {vin} сохранён в гараж!\n💬 Комментарий: {comment}")
         else:
-            await upd.message.reply_text(f"✅ Автомобиль `{vin}` сохранён в гараж!", parse_mode='Markdown')
+            await upd.message.reply_text(f"✅ Автомобиль {vin} сохранён в гараж!")
     else:
-        await upd.message.reply_text(f"❌ Автомобиль `{vin}` уже есть в вашем гараже!", parse_mode='Markdown')
+        await upd.message.reply_text(f"❌ Автомобиль {vin} уже есть в вашем гараже!")
     
     del ctx.user_data['save_vin']
     return ConversationHandler.END
@@ -1479,31 +1412,31 @@ async def bonus_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     total_purchases = get_user_total(uid)
     percent = get_bonus_percent(uid)
     
-    text = (f"🎁 **БОНУСНАЯ ПРОГРАММА**\n\n"
-            f"💰 Текущий баланс: **{bal}** бонусов\n"
-            f"📈 Всего начислено: **{total_earned}** бонусов\n"
-            f"📉 Всего потрачено: **{total_spent}** бонусов\n"
-            f"🛒 Накоплено по покупкам: **{total_purchases}** руб.\n"
-            f"⭐ Текущий процент начисления: **{percent}%**\n\n"
-            f"**📋 ПРАВИЛА ИСПОЛЬЗОВАНИЯ:**\n"
-            f"• ✅ Можно списать **до {MAX_BONUS_SPEND_PERCENT}%** от суммы запчастей\n"
-            f"• ❌ **Не действует на продукцию RAVENOL**\n"
-            f"• ❌ **Не действует на доставку**\n"
-            f"• 💳 Минимальная оплата деньгами: **{MIN_CASH_PAYMENT} руб.**\n\n"
-            f"**📊 ГРАДАЦИЯ НАЧИСЛЕНИЯ:**\n"
+    text = (f"🎁 БОНУСНАЯ ПРОГРАММА\n\n"
+            f"💰 Текущий баланс: {bal} бонусов\n"
+            f"📈 Всего начислено: {total_earned} бонусов\n"
+            f"📉 Всего потрачено: {total_spent} бонусов\n"
+            f"🛒 Накоплено по покупкам: {total_purchases} руб.\n"
+            f"⭐ Текущий процент начисления: {percent}%\n\n"
+            f"📋 ПРАВИЛА ИСПОЛЬЗОВАНИЯ:\n"
+            f"• ✅ Можно списать до {MAX_BONUS_SPEND_PERCENT}% от суммы запчастей\n"
+            f"• ❌ Не действует на продукцию RAVENOL\n"
+            f"• ❌ Не действует на доставку\n"
+            f"• 💳 Минимальная оплата деньгами: {MIN_CASH_PAYMENT} руб.\n\n"
+            f"📊 ГРАДАЦИЯ НАЧИСЛЕНИЯ:\n"
             f"1% → до 100 000 руб.\n2% → 100 000 - 200 000 руб.\n3% → 200 000 - 300 000 руб.\n"
             f"4% → 300 000 - 400 000 руб.\n5% → 400 000 - 500 000 руб.\n6% → 500 000 - 600 000 руб.\n"
             f"7% → 600 000 - 700 000 руб.\n8% → 700 000 - 800 000 руб.\n"
             f"9% → 800 000 - 900 000 руб.\n10% → от 900 000 руб.\n")
     
-    await upd.message.reply_text(text, parse_mode='Markdown')
+    await upd.message.reply_text(text)
     
     history = get_bonus_history(uid, 10)
     if history:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("📜 Показать историю", callback_data="bonus_history")]
         ])
-        await upd.message.reply_text("📊 **Дополнительная информация:**", reply_markup=kb, parse_mode='Markdown')
+        await upd.message.reply_text("📊 Дополнительная информация:", reply_markup=kb)
 
 async def bonus_history_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать историю бонусов"""
@@ -1517,17 +1450,17 @@ async def bonus_history_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📭 История операций пока пуста")
         return
     
-    text = "📜 **ИСТОРИЯ БОНУСОВ**\n\n"
+    text = "📜 ИСТОРИЯ БОНУСОВ\n\n"
     for h in history:
         order_num, amount, h_type, desc, created = h
         sign = "➕" if h_type == 'earned' else "➖" if h_type == 'spent' else "🔄"
-        text += f"{sign} **{amount} руб.** - {desc}\n"
+        text += f"{sign} {amount} руб. - {desc}\n"
         text += f"   📅 {created[:10]}\n\n"
     
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ Назад", callback_data="bonus_back")]
     ])
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
+    await query.edit_message_text(text, reply_markup=kb)
 
 async def bonus_back_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Назад к бонусам"""
@@ -1555,10 +1488,9 @@ async def apply_bonus_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if eligible_sum <= 0:
         await query.edit_message_text(
-            f"❌ **НЕВОЗМОЖНО СПИСАТЬ БОНУСЫ**\n\n"
+            f"❌ НЕВОЗМОЖНО СПИСАТЬ БОНУСЫ\n\n"
             f"{get_bonus_spend_details(order)}\n\n"
-            f"Причина: в заказе нет товаров, подходящих для списания бонусов.",
-            parse_mode='Markdown'
+            f"Причина: в заказе нет товаров, подходящих для списания бонусов."
         )
         return
     
@@ -1567,11 +1499,10 @@ async def apply_bonus_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if max_spend <= 0:
         await query.edit_message_text(
-            f"❌ **НЕВОЗМОЖНО СПИСАТЬ БОНУСЫ**\n\n"
+            f"❌ НЕВОЗМОЖНО СПИСАТЬ БОНУСЫ\n\n"
             f"{get_bonus_spend_details(order)}\n"
             f"🎁 Ваш баланс: {balance} руб.\n\n"
-            f"Недостаточно бонусов или сумма слишком мала.",
-            parse_mode='Markdown'
+            f"Недостаточно бонусов или сумма слишком мала."
         )
         return
     
@@ -1585,13 +1516,12 @@ async def apply_bonus_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     details = get_bonus_spend_details(order)
     
     await query.edit_message_text(
-        f"🎁 **СПИСАНИЕ БОНУСОВ**\n\n"
+        f"🎁 СПИСАНИЕ БОНУСОВ\n\n"
         f"{details}\n"
         f"🎁 Ваш баланс: {balance} руб.\n"
-        f"📊 **Максимум списания: {max_spend} руб.**\n\n"
+        f"📊 Максимум списания: {max_spend} руб.\n\n"
         f"Выберите действие:",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        reply_markup=kb
     )
 
 @rate_limit
@@ -1651,14 +1581,13 @@ async def spend_bonus_percent_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
     ])
     
     await query.edit_message_text(
-        f"⚠️ **ПОДТВЕРЖДЕНИЕ СПИСАНИЯ**\n\n"
+        f"⚠️ ПОДТВЕРЖДЕНИЕ СПИСАНИЯ\n\n"
         f"📦 Заказ: {order_num}\n"
         f"💰 Сумма запчастей: {current_total_parts} руб.\n"
         f"🎁 Будет списано: {spend_amount} руб.\n"
         f"💳 К оплате после списания: {new_total} руб.\n\n"
         f"Вы уверены?",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        reply_markup=kb
     )
 
 async def confirm_spend_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1687,19 +1616,18 @@ async def confirm_spend_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _, _, ravenol_sum, other_sum = has_ravenol_only(order)
         ravenol_info = ""
         if ravenol_sum > 0:
-            ravenol_info = f"\n\n📊 **Состав заказа:**\n• Ravenol: {ravenol_sum} руб. (❌ без изменений)\n• Остальные: {other_sum} → {other_sum - spend_amount} руб."
+            ravenol_info = f"\n\n📊 Состав заказа:\n• Ravenol: {ravenol_sum} руб. (❌ без изменений)\n• Остальные: {other_sum} → {other_sum - spend_amount} руб."
         
         bonus_data = get_bonus(uid)
         
         await query.edit_message_text(
-            f"✅ **БОНУСЫ УСПЕШНО СПИСАНЫ!**\n\n"
+            f"✅ БОНУСЫ УСПЕШНО СПИСАНЫ!\n\n"
             f"📦 Заказ: {order_num}\n"
             f"💰 Сумма запчастей: {current_total_parts} → {new_parts_total} руб.\n"
             f"🚚 Доставка: {delivery_price} руб. (❌ без изменений)\n"
             f"🎁 Списано бонусов: {spend_amount} руб.\n"
-            f"💳 **ИТОГО К ОПЛАТЕ: {new_total} руб.**{ravenol_info}\n\n"
-            f"🎁 Остаток бонусов: {bonus_data['balance']} руб.",
-            parse_mode='Markdown'
+            f"💳 ИТОГО К ОПЛАТЕ: {new_total} руб.{ravenol_info}\n\n"
+            f"🎁 Остаток бонусов: {bonus_data['balance']} руб."
         )
     else:
         await query.edit_message_text("❌ Ошибка при списании бонусов")
@@ -1720,14 +1648,13 @@ async def spend_bonus_custom_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYP
         max_possible = min(max_allowed, balance)
         
         await query.edit_message_text(
-            f"✏️ **ВВЕДИТЕ СУММУ СПИСАНИЯ**\n\n"
+            f"✏️ ВВЕДИТЕ СУММУ СПИСАНИЯ\n\n"
             f"📦 Заказ: {order_num}\n"
             f"💰 Сумма для бонусов: {eligible_sum} руб.\n"
             f"📊 Максимум списания (20%): {max_allowed} руб.\n"
             f"🎁 Ваш баланс: {balance} руб.\n"
             f"✅ Доступно для списания: {max_possible} руб.\n\n"
-            f"Введите целое число (рублей):",
-            parse_mode='Markdown'
+            f"Введите целое число (рублей):"
         )
     else:
         await query.edit_message_text("❌ Заказ не найден")
@@ -1806,14 +1733,13 @@ async def spend_bonus_custom_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
     
     await upd.message.reply_text(
-        f"⚠️ **ПОДТВЕРЖДЕНИЕ СПИСАНИЯ**\n\n"
+        f"⚠️ ПОДТВЕРЖДЕНИЕ СПИСАНИЯ\n\n"
         f"📦 Заказ: {order_num}\n"
         f"💰 Сумма запчастей: {current_parts} руб.\n"
         f"🎁 Будет списано: {spend_amount} руб.\n"
         f"💳 К оплате после списания: {new_total} руб.\n\n"
         f"Вы уверены?",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        reply_markup=kb
     )
     
     del ctx.user_data['bonus_order']
@@ -1831,7 +1757,7 @@ async def my_orders(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await upd.message.reply_text("📭 У вас пока нет заказов", reply_markup=main_menu)
         return
     
-    text = "📦 **ВАШИ ЗАКАЗЫ:**\n\n"
+    text = "📦 ВАШИ ЗАКАЗЫ:\n\n"
     kb = []
     
     for order in orders:
@@ -1839,14 +1765,13 @@ async def my_orders(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total = safe_int(tp) + safe_int(dp)
         icon = get_status_icon(status_text)
         
-        text += f"{icon} `{order_num}` — {created[:10]} — {total} руб.\n"
+        text += f"{icon} {order_num} — {created[:10]} — {total} руб.\n"
         kb.append([InlineKeyboardButton(f"🔍 Заказ {order_num}", callback_data=f"view_{order_num}")])
     
     kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")])
-    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 @require_order_owner
-@safe_markdown
 async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Просмотр деталей заказа с возможностью удаления товаров"""
     query = upd.callback_query
@@ -1863,63 +1788,44 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = order.get('status', '')
     can_edit = status == 'waiting_payment'
     
-    # Экранируем все переменные
-    vin = escape_markdown(order.get('vin', 'не указан'))
-    mileage = escape_markdown(order.get('mileage', 'не указан'))
-    style_city = escape_markdown(order.get('style_city', 'не указан'))
-    style_highway = escape_markdown(order.get('style_highway', 'не указан'))
-    address = escape_markdown(order.get('delivery_address', 'не указан'))
-    phone = escape_markdown(order.get('phone', 'не указан'))
-    status_text = escape_markdown(order.get('status_text', 'неизвестен'))
-    tracking = escape_markdown(order.get('tracking_number', ''))
-    
-    text = (f"📋 **ЗАКАЗ {order_num}**\n\n"
-            f"🚗 VIN: `{vin}`\n"
-            f"📊 Пробег: {mileage} км\n"
-            f"🏙️ Стиль город: {style_city}\n"
-            f"🛣️ Стиль трасса: {style_highway}\n"
-            f"📍 Адрес: {address}\n"
-            f"📞 Телефон: {phone}\n"
+    text = (f"📋 ЗАКАЗ {order_num}\n\n"
+            f"🚗 VIN: {order.get('vin', 'не указан')}\n"
+            f"📊 Пробег: {order.get('mileage', 'не указан')} км\n"
+            f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
+            f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
+            f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
+            f"📞 Телефон: {order.get('phone', 'не указан')}\n"
             f"💰 Запчасти: {total_parts} руб.\n"
             f"🚚 Доставка: {delivery_price} руб.\n"
-            f"💳 **ИТОГО: {total_sum} руб.**\n"
-            f"📦 Статус: {status_text}")
+            f"💳 ИТОГО: {total_sum} руб.\n"
+            f"📦 Статус: {order.get('status_text', 'неизвестен')}")
     
-    if tracking:
-        text += f"\n📮 Трек-номер: `{tracking}`"
+    if order.get('tracking_number'):
+        text += f"\n📮 Трек-номер: {order.get('tracking_number')}"
     
     if eligible_sum > 0:
-        text += f"\n\n🎁 **Доступно для бонусов:** {eligible_sum} руб.\n"
+        text += f"\n\n🎁 Доступно для бонусов: {eligible_sum} руб.\n"
         text += f"   (можно списать до {eligible_percent} руб.)"
     
-    # Показываем список товаров
     final_order = order.get('final_order', '')
     if final_order and final_order not in [None, 'None', '[]', '{}']:
-        text += "\n\n📦 **ВАШИ ТОВАРЫ:**\n"
+        text += "\n\n📦 ВАШИ ТОВАРЫ:\n"
         try:
             selected_parts = ast.literal_eval(final_order)
             if isinstance(selected_parts, list) and selected_parts:
                 for i, part in enumerate(selected_parts):
                     if isinstance(part, dict):
-                        part_name = escape_markdown(part.get('name', 'неизвестно'))
+                        part_name = part.get('name', 'неизвестно')
                         part_price = part.get('price', 0)
-                        ravenol_mark = " ❌ (Ravenol)" if is_ravenol_product(part_name) else ""
+                        ravenol_mark = " (Ravenol)" if is_ravenol_product(part_name) else ""
                         text += f"{i+1}. {part_name}\n   → {part_price} руб.{ravenol_mark}\n"
             else:
-                text += f"{escape_markdown(final_order[:300])}"
+                text += f"{final_order[:300]}"
         except:
-            text += f"{escape_markdown(final_order[:300])}"
+            text += f"{final_order[:300]}"
     elif order.get('needed_parts'):
-        needed = escape_markdown(order.get('needed_parts', 'не указан')[:300])
-        text += f"\n\n📝 **ИЗНАЧАЛЬНЫЙ ЗАПРОС:**\n{needed}"
+        text += f"\n\n📝 ИЗНАЧАЛЬНЫЙ ЗАПРОС:\n{order.get('needed_parts', 'не указан')[:300]}"
     
-    # Разбиваем длинное сообщение
-    parts = split_long_message(text, 4000)
-    await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-    for part in parts[1:]:
-        await query.message.reply_text(part, parse_mode='Markdown')
-    
-    # Клавиатура
     kb = []
     
     if can_edit:
@@ -1934,7 +1840,7 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     kb.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")])
     
-    await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def back_orders_list(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Назад к списку заказов"""
@@ -1988,7 +1894,7 @@ async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = []
         for i, part in enumerate(selected_parts):
             if isinstance(part, dict):
-                part_name = escape_markdown(part.get('name', 'Неизвестно')[:35])
+                part_name = part.get('name', 'Неизвестно')[:35]
                 part_price = part.get('price', 0)
                 kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
                                                callback_data=f"toggle_item_{order_num}_{i}")])
@@ -1997,14 +1903,13 @@ async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb.append([InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"view_{order_num}")])
         
         await query.edit_message_text(
-            f"🗑️ **УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}**\n\n"
+            f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
             f"Нажмите на товар, чтобы отметить его для удаления.\n"
             f"Отмеченные товары будут удалены из заказа.\n\n"
             f"⬜ - товар остаётся\n"
             f"✅ - товар будет удалён\n\n"
             f"После подтверждения вы сможете оставить комментарий.",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            reply_markup=InlineKeyboardMarkup(kb)
         )
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -2037,7 +1942,7 @@ async def toggle_item_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = []
     for i, part in enumerate(selected_parts):
         if isinstance(part, dict):
-            part_name = escape_markdown(part.get('name', 'Неизвестно')[:35])
+            part_name = part.get('name', 'Неизвестно')[:35]
             part_price = part.get('price', 0)
             check = "✅" if i in selected_items else "⬜"
             kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
@@ -2069,10 +1974,9 @@ async def confirm_remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_T
     # Проверка: нельзя удалить все товары
     if len(selected_items) >= len(selected_parts):
         await query.edit_message_text(
-            "❌ **Нельзя удалить все товары из заказа!**\n\n"
+            "❌ Нельзя удалить все товары из заказа!\n\n"
             "В заказе должен остаться хотя бы один товар.\n"
-            "Если хотите полностью отменить заказ, используйте кнопку «Отменить заказ».",
-            parse_mode='Markdown'
+            "Если хотите полностью отменить заказ, используйте кнопку «Отменить заказ»."
         )
         return
     
@@ -2089,13 +1993,12 @@ async def confirm_remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_T
     ctx.user_data['remove_items_remaining'] = remaining_parts
     
     await query.edit_message_text(
-        f"🗑️ **УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}**\n\n"
+        f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
         f"Будет удалено товаров: {len(removed_parts)}\n"
         f"Останется товаров: {len(remaining_parts)}\n\n"
-        f"**Укажите причину удаления (необязательно):**\n\n"
+        f"Укажите причину удаления (необязательно):\n\n"
         f"Отправьте сообщение с комментарием\n"
-        f"Или отправьте '-' чтобы пропустить",
-        parse_mode='Markdown'
+        f"Или отправьте '-' чтобы пропустить"
     )
     return RemoveStates.COMMENT
 
@@ -2143,21 +2046,19 @@ async def remove_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if order:
         await upd.message.bot.send_message(
             MANAGER_ID,
-            text=f"🔄 **КЛИЕНТ УДАЛИЛ ТОВАРЫ ИЗ ЗАКАЗА**\n\n"
+            text=f"🔄 КЛИЕНТ УДАЛИЛ ТОВАРЫ ИЗ ЗАКАЗА\n\n"
                  f"📦 Заказ: {order_num}\n"
                  f"👤 Клиент: {order.get('user_name', '')}\n"
                  f"🗑️ Удалено: {removed_names}\n"
                  f"💰 Новая сумма: {new_total + delivery_price} руб.\n"
-                 f"📝 Комментарий: {comment if comment else 'Не указан'}",
-            parse_mode='Markdown'
+                 f"📝 Комментарий: {comment if comment else 'Не указан'}"
         )
     
     await upd.message.reply_text(
-        f"✅ **Товары успешно удалены из заказа {order_num}!**\n\n"
+        f"✅ Товары успешно удалены из заказа {order_num}!\n\n"
         f"🗑️ Удалено: {len(removed_parts)} товаров\n"
         f"💰 Новая сумма к оплате: {new_total + delivery_price} руб.\n\n"
-        f"Менеджер получил уведомление.",
-        parse_mode='Markdown'
+        f"Менеджер получил уведомление."
     )
     
     # Очищаем сессию
@@ -2184,14 +2085,13 @@ async def cancel_by_user_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ])
     
     await query.edit_message_text(
-        f"⚠️ **ВНИМАНИЕ!**\n\n"
+        f"⚠️ ВНИМАНИЕ!\n\n"
         f"Вы уверены, что хотите отменить заказ {order_num}?\n\n"
         f"После отмены:\n"
         f"• Заказ перейдёт в статус «Отменён пользователем»\n"
         f"• Если вы списывали бонусы, они будут возвращены\n\n"
         f"Это действие нельзя отменить!",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        reply_markup=kb
     )
 
 async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2241,19 +2141,17 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
     # Уведомляем админа
     await upd.message.bot.send_message(
         MANAGER_ID,
-        text=f"🔄 **КЛИЕНТ ОТМЕНИЛ ЗАКАЗ**\n\n"
+        text=f"🔄 КЛИЕНТ ОТМЕНИЛ ЗАКАЗ\n\n"
              f"📦 Заказ: {order_num}\n"
              f"👤 Клиент: {order.get('user_name', '')}\n"
-             f"💰 Сумма: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб.",
-        parse_mode='Markdown'
+             f"💰 Сумма: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб."
     )
     
     await query.edit_message_text(
-        f"✅ **Заказ {order_num} отменён!**\n\n"
+        f"✅ Заказ {order_num} отменён!\n\n"
         f"Статус заказа: ❌ Отменён пользователем\n\n"
         f"Если были списаны бонусы, они возвращены на ваш счёт.\n"
-        f"Менеджер получил уведомление.",
-        parse_mode='Markdown'
+        f"Менеджер получил уведомление."
     )
 
 # ========== ГАРАЖ ==========
@@ -2264,31 +2162,26 @@ async def garage_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if not cars:
         await upd.message.reply_text(
-            "🚗 **МОЙ ГАРАЖ**\n\nУ вас пока нет добавленных автомобилей.\n\n"
-            "➕ **Добавить автомобиль:**\n"
+            "🚗 МОЙ ГАРАЖ\n\nУ вас пока нет добавленных автомобилей.\n\n"
+            "➕ Добавить автомобиль:\n"
             "Просто отправьте мне VIN номер (17 символов) или нажмите кнопку ниже.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")],
                 [InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back_to_menu")]
-            ]),
-            parse_mode='Markdown'
+            ])
         )
         return
     
-    text = "🚗 **МОЙ ГАРАЖ**\n\n"
+    text = "🚗 МОЙ ГАРАЖ\n\n"
     keyboard = []
     
     for car in cars:
         vin, description, comment, created = car
         desc = description if description else "Описание не указано"
-        vin_escaped = escape_markdown(vin)
-        desc_escaped = escape_markdown(desc)
-        comment_escaped = escape_markdown(comment) if comment else ""
-        
-        text += f"🔹 **{vin_escaped}**\n"
-        text += f"   📝 {desc_escaped}\n"
-        if comment_escaped:
-            text += f"   💬 *{comment_escaped}*\n"
+        text += f"🔹 {vin}\n"
+        text += f"   📝 {desc}\n"
+        if comment:
+            text += f"   💬 {comment}\n"
         text += f"   📅 Добавлен: {created[:10]}\n\n"
         
         keyboard.append([InlineKeyboardButton(f"✏️ Комментарий", callback_data=f"garage_comment_{vin}")])
@@ -2297,16 +2190,15 @@ async def garage_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("➕ Добавить авто", callback_data="garage_add")])
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="garage_back_to_menu")])
     
-    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def garage_add_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Начало добавления автомобиля"""
     query = upd.callback_query
     await query.answer()
     await query.edit_message_text(
-        "🚗 **ДОБАВЛЕНИЕ АВТОМОБИЛЯ**\n\n"
-        "Шаг 1/2: Отправьте VIN номер автомобиля (17 символов):",
-        parse_mode='Markdown'
+        "🚗 ДОБАВЛЕНИЕ АВТОМОБИЛЯ\n\n"
+        "Шаг 1/2: Отправьте VIN номер автомобиля (17 символов):"
     )
     return GarageStates.VIN
 
@@ -2316,20 +2208,18 @@ async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if not validate_vin(vin):
         await upd.message.reply_text(
-            "❌ **Неверный VIN**\n\n"
+            "❌ Неверный VIN\n\n"
             "VIN должен содержать 17 символов (только буквы и цифры, без I, O, Q).\n"
-            "Попробуйте ещё раз:",
-            parse_mode='Markdown'
+            "Попробуйте ещё раз:"
         )
         return GarageStates.VIN
     
     ctx.user_data['new_car_vin'] = vin
     await upd.message.reply_text(
-        f"🚗 VIN: `{vin}`\n\n"
-        f"**Шаг 2/2:** Введите описание автомобиля\n\n"
+        f"🚗 VIN: {vin}\n\n"
+        f"Шаг 2/2: Введите описание автомобиля\n\n"
         f"Пример: BMW X5 3.0d, 2018, чёрный\n\n"
-        f"Или отправьте '-' чтобы пропустить:",
-        parse_mode='Markdown'
+        f"Или отправьте '-' чтобы пропустить:"
     )
     return GarageStates.DESCRIPTION
 
@@ -2345,9 +2235,9 @@ async def garage_get_description(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     if save_car(upd.effective_user.id, vin, description, ""):
-        await upd.message.reply_text(f"✅ Автомобиль `{vin}` успешно добавлен в ваш гараж!", parse_mode='Markdown')
+        await upd.message.reply_text(f"✅ Автомобиль {vin} успешно добавлен в ваш гараж!")
     else:
-        await upd.message.reply_text(f"❌ Автомобиль `{vin}` уже есть в вашем гараже!", parse_mode='Markdown')
+        await upd.message.reply_text(f"❌ Автомобиль {vin} уже есть в вашем гараже!")
     
     await garage_menu(upd, ctx)
     return ConversationHandler.END
@@ -2363,9 +2253,8 @@ async def garage_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data="garage_back_to_menu")]
     ])
     await query.edit_message_text(
-        f"⚠️ Удалить автомобиль `{vin}` из гаража?\n\nЭто действие нельзя отменить.",
-        reply_markup=kb,
-        parse_mode='Markdown'
+        f"⚠️ Удалить автомобиль {vin} из гаража?\n\nЭто действие нельзя отменить.",
+        reply_markup=kb
     )
 
 async def garage_confirm_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2375,9 +2264,9 @@ async def garage_confirm_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     vin = query.data[18:]
     
     if delete_car(query.from_user.id, vin):
-        await query.edit_message_text(f"✅ Автомобиль `{vin}` удалён из гаража!", parse_mode='Markdown')
+        await query.edit_message_text(f"✅ Автомобиль {vin} удалён из гаража!")
     else:
-        await query.edit_message_text(f"❌ Автомобиль `{vin}` не найден в гараже.", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ Автомобиль {vin} не найден в гараже.")
     
     await garage_menu(upd, ctx)
 
@@ -2389,13 +2278,12 @@ async def garage_comment_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['comment_vin'] = vin
     
     await query.edit_message_text(
-        f"✏️ **КОММЕНТАРИЙ К АВТОМОБИЛЮ**\n\n"
-        f"Автомобиль: `{vin}`\n\n"
+        f"✏️ КОММЕНТАРИЙ К АВТОМОБИЛЮ\n\n"
+        f"Автомобиль: {vin}\n\n"
         f"Введите комментарий для этого автомобиля.\n"
         f"Например: «зимняя резина», «жена», «служебный»\n\n"
         f"Или отправьте '-' чтобы удалить комментарий.\n\n"
-        f"Максимум 100 символов.",
-        parse_mode='Markdown'
+        f"Максимум 100 символов."
     )
     return GarageStates.DESCRIPTION
 
@@ -2419,9 +2307,9 @@ async def garage_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     update_car_comment(user_id, vin, comment)
     
     if comment:
-        await upd.message.reply_text(f"✅ Комментарий «{comment}» добавлен к автомобилю `{vin}`!", parse_mode='Markdown')
+        await upd.message.reply_text(f"✅ Комментарий «{comment}» добавлен к автомобилю {vin}!")
     else:
-        await upd.message.reply_text(f"✅ Комментарий к автомобилю `{vin}` удалён!", parse_mode='Markdown')
+        await upd.message.reply_text(f"✅ Комментарий к автомобилю {vin} удалён!")
     
     del ctx.user_data['comment_vin']
     await garage_menu(upd, ctx)
@@ -2448,61 +2336,61 @@ async def referral_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     finally:
         conn.close()
     
-    text = (f"🔗 **РЕФЕРАЛЬНАЯ ПРОГРАММА**\n\n"
-            f"**Ваша реферальная ссылка:**\n"
-            f"`{link}`\n\n"
-            f"👥 Приглашено друзей: **{referrals_count}**\n"
-            f"📊 Вы получаете **0.5%** от суммы заказов ваших друзей бонусами!\n"
-            f"🎁 Друг получает **500** приветственных бонусов!\n\n"
-            f"💰 Текущий баланс: **{get_bonus(upd.effective_user.id)['balance']}** бонусов")
+    text = (f"🔗 РЕФЕРАЛЬНАЯ ПРОГРАММА\n\n"
+            f"Ваша реферальная ссылка:\n"
+            f"{link}\n\n"
+            f"👥 Приглашено друзей: {referrals_count}\n"
+            f"📊 Вы получаете 0.5% от суммы заказов ваших друзей бонусами!\n"
+            f"🎁 Друг получает 500 приветственных бонусов!\n\n"
+            f"💰 Текущий баланс: {get_bonus(upd.effective_user.id)['balance']} бонусов")
     
-    await upd.message.reply_text(text, parse_mode='Markdown')
+    await upd.message.reply_text(text)
 
 # ========== ДОСТАВКА И ПОМОЩЬ ==========
 
 async def delivery_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Команда /delivery - информация о доставке"""
-    text = (f"🚚 **РАСЧЁТ ДОСТАВКИ ОТ МКАД**\n\n"
-            f"Базовая стоимость: **{DELIVERY_BASE}** руб.\n\n"
-            f"📌 **Тарифы:**\n"
+    text = (f"🚚 РАСЧЁТ ДОСТАВКИ ОТ МКАД\n\n"
+            f"Базовая стоимость: {DELIVERY_BASE} руб.\n\n"
+            f"📌 Тарифы:\n"
             f"• 0 км (Москва): {DELIVERY_BASE} руб.\n"
             f"• 1-50 км: {DELIVERY_BASE} + км × {DELIVERY_RATE_UP_TO_50}\n"
             f"• 51-100 км: {DELIVERY_BASE} + км × {DELIVERY_RATE_UP_TO_100}\n"
             f"• 101+ км: {DELIVERY_BASE} + км × {DELIVERY_RATE_OVER_100}\n\n"
-            f"📌 **Самовывоз (бесплатно):**\n"
+            f"📌 Самовывоз (бесплатно):\n"
             f"• Метро Давыдково\n"
             f"• Метро Строгино\n"
             f"• Метро Южная\n\n"
-            f"📌 **Скидка на доставку от суммы заказа:**\n"
+            f"📌 Скидка на доставку от суммы заказа:\n"
             f"• от 10 000 руб. → 5%\n"
             f"• от 15 000 руб. → 10%\n"
             f"• от 20 000 руб. → 15%\n"
             f"... до 100% бесплатно")
     
-    await upd.message.reply_text(text, parse_mode='Markdown')
+    await upd.message.reply_text(text)
 
 async def help_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Команда /help - помощь"""
-    text = ("📖 **ПОМОЩЬ**\n\n"
-            "**Основные команды:**\n"
+    text = ("📖 ПОМОЩЬ\n\n"
+            "Основные команды:\n"
             "/start - Главное меню\n"
             "/my_orders - Мои заказы\n"
             "/bonus - Бонусы\n"
             "/referral - Рефералы\n"
             "/delivery - Доставка\n"
             "/help - Эта справка\n\n"
-            "**Мой гараж:**\n"
+            "Мой гараж:\n"
             "Храните VIN и описание автомобилей\n"
             "Быстрый выбор при создании заказа\n\n"
-            "**Бонусная система:**\n"
+            "Бонусная система:\n"
             f"• Начисление: от 1% до 10% от суммы заказа\n"
             f"• Списание: до {MAX_BONUS_SPEND_PERCENT}% от суммы запчастей\n"
             f"• ❌ Не действует на RAVENOL и доставку\n"
             f"• Минимальная оплата деньгами: {MIN_CASH_PAYMENT} руб.\n\n"
-            "**Вопросы:**\n"
+            "Вопросы:\n"
             "По всем вопросам обращайтесь к менеджеру")
     
-    await upd.message.reply_text(text, parse_mode='Markdown')
+    await upd.message.reply_text(text)
 
 # ========== АДМИН ПАНЕЛЬ ==========
 
@@ -2518,25 +2406,24 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
     
     for o in orders[:10]:
         order_num = clean_order_number(o[0])
-        user_name = escape_markdown(o[1][:15] if len(o[1]) > 15 else o[1])
+        user_name = o[1][:15] if len(o[1]) > 15 else o[1]
         status_text = o[2] if len(o) > 2 else ''
         icon = get_status_icon(status_text)
         
         keyboard.append([InlineKeyboardButton(f"{icon} {order_num} | {user_name}", callback_data=f"admin_order_{order_num}")])
     
-    text = "👨‍💼 **АДМИН ПАНЕЛЬ**\n\nВыберите заказ для управления:"
+    text = "👨‍💼 АДМИН ПАНЕЛЬ\n\nВыберите заказ для управления:"
     
     if message:
         try:
-            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            await message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Admin menu edit error: {e}")
     else:
-        await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @require_manager
-@safe_markdown
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработка админ-панели"""
     query = upd.callback_query
@@ -2563,12 +2450,11 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         status_text = "\n".join([f"• {s}: {c}" for s, c in status_count.items()])
         
         await query.edit_message_text(
-            f"📊 **СТАТИСТИКА**\n\n"
+            f"📊 СТАТИСТИКА\n\n"
             f"📦 Заказов: {total_orders}\n"
             f"💰 Сумма: {total_sum:,} руб.\n\n"
-            f"**По статусам:**\n{status_text}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]),
-            parse_mode='Markdown'
+            f"По статусам:\n{status_text}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]])
         )
         return
     
@@ -2607,27 +2493,16 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         
         total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
-        
-        # Экранируем переменные
-        user_name = escape_markdown(order.get('user_name', ''))
-        phone = escape_markdown(order.get('phone', 'не указан'))
-        style_city = escape_markdown(order.get('style_city', 'не указан'))
-        style_highway = escape_markdown(order.get('style_highway', 'не указан'))
-        city = escape_markdown(order.get('city', 'не указан'))
-        address = escape_markdown(order.get('delivery_address', 'не указан'))
-        delivery_type = escape_markdown(order.get('delivery_type', 'не указана'))
-        status_text = escape_markdown(order.get('status_text', 'неизвестен'))
-        
-        text = (f"📋 **ЗАКАЗ {order.get('order_number', '')}**\n\n"
-                f"👤 {user_name}\n"
-                f"📞 {phone}\n"
-                f"🏙️ Стиль город: {style_city}\n"
-                f"🛣️ Стиль трасса: {style_highway}\n"
-                f"🏙️ Город: {city}\n"
-                f"📍 Адрес: {address}\n"
-                f"🚚 Доставка: {delivery_type} | {order.get('delivery_price', 0)} руб.\n"
+        text = (f"📋 ЗАКАЗ {order.get('order_number', '')}\n\n"
+                f"👤 {order.get('user_name', '')}\n"
+                f"📞 {order.get('phone', 'не указан')}\n"
+                f"🏙️ Стиль город: {order.get('style_city', 'не указан')}\n"
+                f"🛣️ Стиль трасса: {order.get('style_highway', 'не указан')}\n"
+                f"🏙️ Город: {order.get('city', 'не указан')}\n"
+                f"📍 Адрес: {order.get('delivery_address', 'не указан')}\n"
+                f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
                 f"💰 Сумма: {total_sum} руб.\n"
-                f"📦 Статус: {status_text}")
+                f"📦 Статус: {order.get('status_text', 'неизвестен')}")
         
         kb = [
             [InlineKeyboardButton("💰 Оплачен", callback_data=f"pay_{order_num}")],
@@ -2645,7 +2520,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]
         ]
         
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
     # ========== ИСТОРИЯ ИЗМЕНЕНИЙ ==========
@@ -2665,34 +2540,29 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             conn.close()
         
         if not changes:
-            await query.edit_message_text(f"📜 **ИСТОРИЯ ИЗМЕНЕНИЙ ЗАКАЗА {order_num}**\n\nНет записей об изменениях.")
+            await query.edit_message_text(f"📜 ИСТОРИЯ ИЗМЕНЕНИЙ ЗАКАЗА {order_num}\n\nНет записей об изменениях.")
             return
         
-        text = f"📜 **ИСТОРИЯ ИЗМЕНЕНИЙ ЗАКАЗА {order_num}**\n\n"
+        text = f"📜 ИСТОРИЯ ИЗМЕНЕНИЙ ЗАКАЗА {order_num}\n\n"
         for change in changes:
             action, old_val, new_val, comment, created = change
             text += f"🕐 {created[:16]}\n"
             if action == 'remove_items':
-                text += f"   🗑️ Удалены товары: {escape_markdown(old_val)}\n"
+                text += f"   🗑️ Удалены товары: {old_val}\n"
             elif action == 'add_item':
-                text += f"   ➕ Добавлен товар: {escape_markdown(new_val)}\n"
+                text += f"   ➕ Добавлен товар: {new_val}\n"
             elif action == 'change_price':
-                text += f"   💰 Изменена цена: {escape_markdown(old_val)} → {escape_markdown(new_val)}\n"
+                text += f"   💰 Изменена цена: {old_val} → {new_val}\n"
             elif action == 'cancel_by_user':
                 text += f"   ❌ Отменён пользователем\n"
             else:
-                text += f"   📝 {action}: {escape_markdown(new_val)}\n"
+                text += f"   📝 {action}: {new_val}\n"
             if comment:
-                text += f"   💬 Комментарий: {escape_markdown(comment)}\n"
+                text += f"   💬 Комментарий: {comment}\n"
             text += "\n"
         
-        parts = split_long_message(text, 4000)
-        await query.edit_message_text(parts[0], parse_mode='Markdown')
-        for part in parts[1:]:
-            await query.message.reply_text(part, parse_mode='Markdown')
-        
         kb = [[InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"admin_order_{order_num}")]]
-        await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
     # ========== ДЕТАЛИ ЗАКАЗА ==========
@@ -2703,55 +2573,309 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Заказ не найден")
             return
         
-        user_name = escape_markdown(order.get('user_name', 'Не указан'))
-        phone = escape_markdown(order.get('phone', 'Не указан'))
-        vin = escape_markdown(order.get('vin', 'Не указан'))
-        mileage = escape_markdown(order.get('mileage', 'Не указан'))
-        style_city = escape_markdown(order.get('style_city', 'Не указан'))
-        style_highway = escape_markdown(order.get('style_highway', 'Не указан'))
-        city = escape_markdown(order.get('city', 'Не указан'))
-        address = escape_markdown(order.get('delivery_address', 'Не указан'))
-        delivery_type = escape_markdown(order.get('delivery_type', 'Не указана'))
-        status_text = escape_markdown(order.get('status_text', 'Неизвестен'))
-        created_at = escape_markdown(order.get('created_at', 'Не указана'))
-        tracking = escape_markdown(order.get('tracking_number', ''))
-        selected_products = escape_markdown(order.get('selected_products', '')[:500])
-        needed_parts = escape_markdown(order.get('needed_parts', '')[:500])
-        final_order = escape_markdown(order.get('final_order', '')[:500])
-        
-        text = (f"🔍 **ПОЛНАЯ ИНФОРМАЦИЯ О ЗАКАЗЕ {order_num}**\n\n"
-                f"👤 Клиент: {user_name}\n"
-                f"📞 Телефон: {phone}\n"
-                f"🚗 VIN: {vin}\n"
-                f"📊 Пробег: {mileage} км\n"
-                f"🏙️ Стиль город: {style_city}\n"
-                f"🛣️ Стиль трасса: {style_highway}\n"
-                f"🏙️ Город: {city}\n"
-                f"📍 Адрес: {address}\n"
-                f"🚚 Доставка: {delivery_type} | {order.get('delivery_price', 0)} руб.\n"
+        text = (f"🔍 ПОЛНАЯ ИНФОРМАЦИЯ О ЗАКАЗЕ {order_num}\n\n"
+                f"👤 Клиент: {order.get('user_name', 'Не указан')}\n"
+                f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
+                f"🚗 VIN: {order.get('vin', 'Не указан')}\n"
+                f"📊 Пробег: {order.get('mileage', 'Не указан')} км\n"
+                f"🏙️ Стиль город: {order.get('style_city', 'Не указан')}\n"
+                f"🛣️ Стиль трасса: {order.get('style_highway', 'Не указан')}\n"
+                f"🏙️ Город: {order.get('city', 'Не указан')}\n"
+                f"📍 Адрес: {order.get('delivery_address', 'Не указан')}\n"
+                f"🚚 Доставка: {order.get('delivery_type', 'Не указана')} | {order.get('delivery_price', 0)} руб.\n"
                 f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
-                f"📦 Статус: {status_text}\n"
-                f"📅 Создан: {created_at}")
+                f"📦 Статус: {order.get('status_text', 'Неизвестен')}\n"
+                f"📅 Создан: {order.get('created_at', 'Не указана')}")
         
-        if tracking:
-            text += f"\n📮 Трек-номер: {tracking}"
+        if order.get('tracking_number'):
+            text += f"\n📮 Трек-номер: {order.get('tracking_number')}"
         
-        if selected_products:
-            text += f"\n\n📦 **ПОДБОР МЕНЕДЖЕРА:**\n{selected_products}"
+        if order.get('selected_products'):
+            text += f"\n\n📦 ПОДБОР МЕНЕДЖЕРА:\n{order.get('selected_products')[:500]}"
         
-        if needed_parts:
-            text += f"\n\n📝 **ЗАПЧАСТИ КЛИЕНТА:**\n{needed_parts}"
+        if order.get('needed_parts'):
+            text += f"\n\n📝 ЗАПЧАСТИ КЛИЕНТА:\n{order.get('needed_parts')[:500]}"
         
-        if final_order and final_order not in ['', 'None', '[]', '{}']:
-            text += f"\n\n✅ **ВЫБРАННЫЕ ЗАПЧАСТИ:**\n{final_order}"
-        
-        parts = split_long_message(text, 4000)
-        await query.edit_message_text(parts[0], parse_mode='Markdown')
-        for part in parts[1:]:
-            await query.message.reply_text(part, parse_mode='Markdown')
+        if order.get('final_order') and order.get('final_order') not in [None, 'None', '[]', '{}']:
+            text += f"\n\n✅ ВЫБРАННЫЕ ЗАПЧАСТИ:\n{order.get('final_order')[:500]}"
         
         kb = [[InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"admin_order_{order_num}")]]
-        await query.edit_message_text(parts[0], reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        return
+    
+    # ========== РЕДАКТИРОВАНИЕ ТОВАРОВ ==========
+    if data.startswith("admin_edit_items_"):
+        order_num = data[17:]
+        order = get_order(order_num)
+        if not order:
+            await query.edit_message_text("❌ Заказ не найден")
+            return
+        
+        final_order = order.get('final_order', '')
+        
+        kb = [
+            [InlineKeyboardButton("🗑️ Удалить товары", callback_data=f"admin_remove_items_{order_num}")],
+            [InlineKeyboardButton("➕ Добавить товар", callback_data=f"admin_add_item_{order_num}")],
+            [InlineKeyboardButton("💰 Изменить цену", callback_data=f"admin_change_price_{order_num}")],
+            [InlineKeyboardButton("◀️ Назад", callback_data=f"admin_order_{order_num}")]
+        ]
+        
+        text = f"✏️ РЕДАКТИРОВАНИЕ ЗАКАЗА {order_num}\n\n"
+        text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n\n"
+        text += "Товары в заказе:\n"
+        
+        if final_order and final_order not in [None, 'None', '[]', '{}']:
+            try:
+                selected_parts = ast.literal_eval(final_order)
+                if isinstance(selected_parts, list) and selected_parts:
+                    for i, part in enumerate(selected_parts):
+                        if isinstance(part, dict):
+                            part_name = part.get('name', 'неизвестно')
+                            part_price = part.get('price', 0)
+                            text += f"{i+1}. {part_name} — {part_price} руб.\n"
+                else:
+                    text += "Нет товаров\n"
+            except:
+                text += "Ошибка отображения\n"
+        else:
+            text += "Нет товаров\n"
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        return
+    
+    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
+    if data.startswith("admin_remove_items_"):
+        order_num = data[18:]
+        order = get_order(order_num)
+        if not order:
+            await query.edit_message_text("❌ Заказ не найден")
+            return
+        
+        final_order = order.get('final_order', '')
+        if not final_order or final_order in [None, 'None', '[]', '{}']:
+            await query.edit_message_text("❌ В заказе нет товаров для удаления")
+            return
+        
+        try:
+            selected_parts = ast.literal_eval(final_order)
+            if not isinstance(selected_parts, list) or not selected_parts:
+                await query.edit_message_text("❌ Нет товаров для удаления")
+                return
+            
+            ctx.user_data['admin_remove_order'] = order_num
+            ctx.user_data['admin_remove_parts'] = selected_parts.copy()
+            ctx.user_data['admin_remove_selected'] = set()
+            
+            kb = []
+            for i, part in enumerate(selected_parts):
+                if isinstance(part, dict):
+                    part_name = part.get('name', 'Неизвестно')[:35]
+                    part_price = part.get('price', 0)
+                    kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
+                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
+            
+            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
+            kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
+            
+            await query.edit_message_text(
+                f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+                f"Нажмите на товар, чтобы отметить его для удаления.\n\n"
+                f"⬜ - товар остаётся\n"
+                f"✅ - товар будет удалён",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
+        return
+    
+    if data.startswith("admin_toggle_item_"):
+        await query.answer()
+        parts = data.split('_')
+        order_num = parts[3]
+        item_idx = int(parts[4])
+        
+        if ctx.user_data.get('admin_remove_order') != order_num:
+            await query.edit_message_text("❌ Сессия истекла")
+            return
+        
+        selected = ctx.user_data.get('admin_remove_selected', set())
+        if item_idx in selected:
+            selected.remove(item_idx)
+        else:
+            selected.add(item_idx)
+        ctx.user_data['admin_remove_selected'] = selected
+        
+        selected_parts = ctx.user_data.get('admin_remove_parts', [])
+        kb = []
+        for i, part in enumerate(selected_parts):
+            if isinstance(part, dict):
+                part_name = part.get('name', 'Неизвестно')[:35]
+                part_price = part.get('price', 0)
+                check = "✅" if i in selected else "⬜"
+                kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
+                                               callback_data=f"admin_toggle_item_{order_num}_{i}")])
+        
+        kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
+        kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
+        
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
+        return
+    
+    if data.startswith("admin_confirm_remove_"):
+        order_num = data[19:]
+        
+        if ctx.user_data.get('admin_remove_order') != order_num:
+            await query.edit_message_text("❌ Сессия истекла")
+            return
+        
+        selected_items = ctx.user_data.get('admin_remove_selected', set())
+        selected_parts = ctx.user_data.get('admin_remove_parts', [])
+        
+        if not selected_items:
+            await query.edit_message_text("❌ Не выбрано ни одного товара")
+            return
+        
+        # Проверка: нельзя удалить все товары
+        if len(selected_items) >= len(selected_parts):
+            await query.edit_message_text(
+                "❌ Нельзя удалить все товары из заказа!\n\n"
+                "В заказе должен остаться хотя бы один товар."
+            )
+            return
+        
+        remaining_parts = []
+        removed_names = []
+        
+        for i, part in enumerate(selected_parts):
+            if i not in selected_items:
+                remaining_parts.append(part)
+            else:
+                if isinstance(part, dict):
+                    removed_names.append(part.get('name', 'Товар'))
+        
+        new_total = sum(p.get('price', 0) for p in remaining_parts if isinstance(p, dict))
+        delivery_price = get_order(order_num).get('delivery_price', 0)
+        
+        update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
+        
+        # Сохраняем историю
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            c = conn.cursor()
+            c.execute('''INSERT INTO order_changes (order_number, user_id, action, old_value, new_value, comment, created_at)
+                         VALUES (?,?,?,?,?,?,?)''',
+                      (order_num, MANAGER_ID, 'remove_items', ', '.join(removed_names), 
+                       f"Удалено {len(selected_items)} товаров", "Удаление товаров администратором", 
+                       datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+        except:
+            pass
+        finally:
+            conn.close()
+        
+        order = get_order(order_num)
+        if order:
+            await ctx.bot.send_message(
+                order['user_id'],
+                text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
+                     f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
+                     f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+                     f"По вопросам обращайтесь к менеджеру."
+            )
+        
+        await query.edit_message_text(
+            f"✅ Товары удалены!\n\n"
+            f"📦 Заказ: {order_num}\n"
+            f"🗑️ Удалено: {len(selected_items)} товаров\n"
+            f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+            f"Клиент получил уведомление."
+        )
+        
+        ctx.user_data.pop('admin_remove_order', None)
+        ctx.user_data.pop('admin_remove_parts', None)
+        ctx.user_data.pop('admin_remove_selected', None)
+        return
+    
+    # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
+    if data.startswith("admin_add_item_"):
+        order_num = data[16:]
+        ctx.user_data['admin_add_item_order'] = order_num
+        await query.edit_message_text(
+            f"➕ ДОБАВЛЕНИЕ ТОВАРА В ЗАКАЗ {order_num}\n\n"
+            f"Введите название товара:"
+        )
+        return AdminAddItemStates.NAME
+    
+    # ========== АДМИН МЕНЯЕТ ЦЕНУ ==========
+    if data.startswith("admin_change_price_"):
+        order_num = data[18:]
+        order = get_order(order_num)
+        if not order:
+            await query.edit_message_text("❌ Заказ не найден")
+            return
+        
+        final_order = order.get('final_order', '')
+        if not final_order or final_order in [None, 'None', '[]', '{}']:
+            await query.edit_message_text("❌ В заказе нет товаров для изменения цены")
+            return
+        
+        try:
+            selected_parts = ast.literal_eval(final_order)
+            if not isinstance(selected_parts, list) or not selected_parts:
+                await query.edit_message_text("❌ Нет товаров для изменения цены")
+                return
+            
+            ctx.user_data['admin_change_price_order'] = order_num
+            ctx.user_data['admin_change_price_parts'] = selected_parts.copy()
+            
+            kb = []
+            for i, part in enumerate(selected_parts):
+                if isinstance(part, dict):
+                    part_name = part.get('name', 'Неизвестно')[:35]
+                    part_price = part.get('price', 0)
+                    kb.append([InlineKeyboardButton(f"💰 {part_name} — {part_price} руб.", 
+                                                   callback_data=f"admin_select_price_item_{order_num}_{i}")])
+            
+            kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
+            
+            await query.edit_message_text(
+                f"💰 ИЗМЕНЕНИЕ ЦЕНЫ ТОВАРА В ЗАКАЗЕ {order_num}\n\n"
+                f"Выберите товар, цену которого хотите изменить:",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+        except Exception as e:
+            logger.error(f"Ошибка: {e}")
+            await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
+        return
+    
+    if data.startswith("admin_select_price_item_"):
+        await query.answer()
+        parts = data.split('_')
+        order_num = parts[4]
+        item_idx = int(parts[5])
+        
+        if ctx.user_data.get('admin_change_price_order') != order_num:
+            await query.edit_message_text("❌ Сессия истекла")
+            return
+        
+        ctx.user_data['admin_change_price_idx'] = item_idx
+        selected_parts = ctx.user_data.get('admin_change_price_parts', [])
+        
+        if item_idx < len(selected_parts) and isinstance(selected_parts[item_idx], dict):
+            part_name = selected_parts[item_idx].get('name', 'Товар')
+            part_price = selected_parts[item_idx].get('price', 0)
+            
+            await query.edit_message_text(
+                f"💰 ИЗМЕНЕНИЕ ЦЕНЫ ТОВАРА\n\n"
+                f"📦 Заказ: {order_num}\n"
+                f"📝 Товар: {part_name}\n"
+                f"💵 Текущая цена: {part_price} руб.\n\n"
+                f"Введите новую цену (целое число, руб.):"
+            )
+            return AdminChangePriceStates.NEW_PRICE
+        else:
+            await query.edit_message_text("❌ Товар не найден")
         return
     
     # ========== ИЗМЕНЕНИЕ ДОСТАВКИ ==========
@@ -2763,7 +2887,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🚛 Сторонняя фирма", callback_data=f"set_delivery_{order_num}_Сторонняя фирма")],
             [InlineKeyboardButton("◀️ Назад", callback_data=f"admin_order_{order_num}")]
         ]
-        await query.edit_message_text("✏️ **Выберите способ доставки:**", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await query.edit_message_text("✏️ Выберите способ доставки:", reply_markup=InlineKeyboardMarkup(kb))
         return
     
     if data.startswith("set_delivery_"):
@@ -2805,14 +2929,13 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.info(f"[SHIP] Сохранён заказ: {order_num}, статус: {order.get('status')}")
         
         await query.edit_message_text(
-            f"📦 **Введите трек-номер для заказа {order_num}:**\n\n"
-            f"⬇️ **ВАЖНО!** ⬇️\n\n"
-            f"1️⃣ **НАЖМИТЕ НА ЭТО СООБЩЕНИЕ**\n"
-            f"2️⃣ Выберите **«ОТВЕТИТЬ»** (Reply)\n"
+            f"📦 Введите трек-номер для заказа {order_num}:\n\n"
+            f"⬇️ ВАЖНО! ⬇️\n\n"
+            f"1️⃣ НАЖМИТЕ НА ЭТО СООБЩЕНИЕ\n"
+            f"2️⃣ Выберите «ОТВЕТИТЬ» (Reply)\n"
             f"3️⃣ Введите трек-номер\n"
             f"4️⃣ Отправьте\n\n"
-            f"❌ Не пишите просто в чат - бот не поймёт!",
-            parse_mode='Markdown'
+            f"❌ Не пишите просто в чат - бот не поймёт!"
         )
         return
     
@@ -2836,7 +2959,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                 add_bonus(order['user_id'], order_num, bonus, f"Заказ {order_num} ({bonus_percent}% от {eligible_for_bonus} руб.)")
                     except Exception as e:
                         logger.error(f"Ошибка начисления бонусов: {e}")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОПЛАЧЕН**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ОПЛАЧЕН")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("ordered_"):
@@ -2846,7 +2971,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_num)
             if order:
                 await ctx.bot.send_message(order['user_id'], text=f"📦 Заказ {order_num} заказан у поставщика! Ожидайте поступления.")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ЗАКАЗАН**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ЗАКАЗАН")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("arrived_"):
@@ -2856,7 +2983,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_num)
             if order:
                 await ctx.bot.send_message(order['user_id'], text=f"📦✅ Заказ {order_num}\n\nТовар поступил на склад!")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ТОВАР ПОСТУПИЛ**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ТОВАР ПОСТУПИЛ")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("ready_"):
@@ -2866,7 +2995,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_num)
             if order:
                 await ctx.bot.send_message(order['user_id'], text=f"✅ Заказ {order_num} готов к выдаче! Можете забрать.")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ГОТОВ К ВЫДАЧЕ**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ГОТОВ К ВЫДАЧЕ")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("del_"):
@@ -2876,7 +3007,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_num)
             if order:
                 await ctx.bot.send_message(order['user_id'], text=f"🏠 Заказ {order_num} доставлен! Спасибо за покупку!")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ДОСТАВЛЕН**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ДОСТАВЛЕН")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("issued_"):
@@ -2886,7 +3019,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             order = get_order(order_num)
             if order:
                 await ctx.bot.send_message(order['user_id'], text=f"📋 Заказ {order_num} ВЫДАН!\n\nСпасибо за покупку!")
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ВЫДАН**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ВЫДАН")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     if data.startswith("cancel_"):
@@ -2909,7 +3044,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 conn.close()
         
         if update_order(order_num, status='cancelled'):
-            await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОТМЕНЁН**", parse_mode='Markdown')
+            await query.edit_message_text(query.message.text + "\n\n✅ СТАТУС: ОТМЕНЁН")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
 
 # ========== АДМИН ДОБАВЛЯЕТ ТОВАР - ВВОД НАЗВАНИЯ ==========
@@ -2928,10 +3065,9 @@ async def admin_add_item_name_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE)
     
     ctx.user_data['admin_add_item_name'] = name
     await upd.message.reply_text(
-        f"➕ **ДОБАВЛЕНИЕ ТОВАРА В ЗАКАЗ {order_num}**\n\n"
+        f"➕ ДОБАВЛЕНИЕ ТОВАРА В ЗАКАЗ {order_num}\n\n"
         f"📝 Название: {name}\n\n"
-        f"Введите цену товара (целое число, руб.):",
-        parse_mode='Markdown'
+        f"Введите цену товара (целое число, руб.):"
     )
     return AdminAddItemStates.PRICE
 
@@ -2993,19 +3129,17 @@ async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE
     # Уведомляем клиента
     await upd.message.bot.send_message(
         order['user_id'],
-        text=f"✏️ **Заказ {order_num} изменён менеджером!**\n\n"
+        text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
              f"➕ Добавлен товар: {name} - {price} руб.\n"
              f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-             f"По вопросам обращайтесь к менеджеру.",
-        parse_mode='Markdown'
+             f"По вопросам обращайтесь к менеджеру."
     )
     
     await upd.message.reply_text(
-        f"✅ **Товар добавлен в заказ {order_num}!**\n\n"
+        f"✅ Товар добавлен в заказ {order_num}!\n\n"
         f"➕ {name} — {price} руб.\n"
         f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-        f"Клиент получил уведомление.",
-        parse_mode='Markdown'
+        f"Клиент получил уведомление."
     )
     
     # Очищаем сессию
@@ -3066,23 +3200,21 @@ async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if order:
         await upd.message.bot.send_message(
             order['user_id'],
-            text=f"✏️ **Заказ {order_num} изменён менеджером!**\n\n"
+            text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
                  f"💰 Изменена цена товара: {old_name}\n"
                  f"💵 Было: {old_price} руб.\n"
                  f"💵 Стало: {new_price} руб.\n"
                  f"💰 Новая сумма заказа: {new_total + delivery_price} руб.\n\n"
-                 f"По вопросам обращайтесь к менеджеру.",
-            parse_mode='Markdown'
+                 f"По вопросам обращайтесь к менеджеру."
         )
     
     await upd.message.reply_text(
-        f"✅ **Цена изменена!**\n\n"
+        f"✅ Цена изменена!\n\n"
         f"📦 Заказ: {order_num}\n"
         f"📝 Товар: {old_name}\n"
         f"💰 {old_price} руб. → {new_price} руб.\n"
         f"💳 Новая сумма заказа: {new_total + delivery_price} руб.\n\n"
-        f"Клиент получил уведомление.",
-        parse_mode='Markdown'
+        f"Клиент получил уведомление."
     )
     
     # Очищаем сессию
@@ -3148,13 +3280,11 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         await ctx.bot.send_message(
             order['user_id'],
-            text=f"📦 **Заказ {order_num} отправлен!**\n\n📮 Трек-номер: `{tracking}`",
-            parse_mode='Markdown'
+            text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер: {tracking}"
         )
         
         await upd.message.reply_text(
-            f"✅ **Трек-номер добавлен!**\n\n📦 {order_num}\n📮 `{tracking}`",
-            parse_mode='Markdown'
+            f"✅ Трек-номер добавлен!\n\n📦 {order_num}\n📮 {tracking}"
         )
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -3202,11 +3332,10 @@ async def manager_reply(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     await ctx.bot.send_message(
         order['user_id'],
-        text=f"🛒 **ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}**\n\n"
+        text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
              f"Менеджер подобрал для вас следующие позиции:\n\n"
              f"Выберите нужные запчасти (можно отметить несколько):",
-        reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode='Markdown'
+        reply_markup=InlineKeyboardMarkup(kb)
     )
     
     await upd.message.reply_text(f"✅ Подбор запчастей для заказа {order_num} отправлен клиенту!")
@@ -3293,7 +3422,7 @@ async def finalize_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if delivery_disc >= 100:
         delivery_final = 0
-        delivery_text = "🚚 Доставка: **БЕСПЛАТНО!**"
+        delivery_text = "🚚 Доставка: БЕСПЛАТНО!"
     elif delivery_disc > 0:
         discount_amount = int(delivery_price * delivery_disc / 100)
         delivery_final = delivery_price - discount_amount
@@ -3305,24 +3434,23 @@ async def finalize_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     final_total = total + delivery_final
     update_order(order_num, total_price=total, final_order=str(selected), status='waiting_payment')
     
-    result = f"✅ **ЗАКАЗ #{order_num} ПОДТВЕРЖДЁН!**\n\n"
+    result = f"✅ ЗАКАЗ #{order_num} ПОДТВЕРЖДЁН!\n\n"
     
     for p in selected:
         wrapped_name = wrap_text(p['name'], 25)
-        ravenol_mark = " ❌ (Ravenol, бонусы не начислены)" if is_ravenol_product(p['name']) else ""
+        ravenol_mark = " (Ravenol, бонусы не начислены)" if is_ravenol_product(p['name']) else ""
         result += f"• {wrapped_name}\n   → {p['price']} руб.{ravenol_mark}\n"
     
     result += f"\n{delivery_text}\n\n"
-    result += f"💰 **ИТОГО К ОПЛАТЕ: {final_total} руб.**"
+    result += f"💰 ИТОГО К ОПЛАТЕ: {final_total} руб."
     result += "\n\n📞 Менеджер свяжется с вами для уточнения оплаты."
     
-    await query.edit_message_text(result, parse_mode='Markdown')
+    await query.edit_message_text(result)
     await ctx.bot.send_message(
         MANAGER_ID,
-        f"✅ **ЗАКАЗ {order_num} ПОДТВЕРЖДЁН КЛИЕНТОМ!**\n\n"
+        f"✅ ЗАКАЗ {order_num} ПОДТВЕРЖДЁН КЛИЕНТОМ!\n\n"
         f"👤 Клиент: {order['user_name']}\n"
-        f"💰 Сумма: {final_total} руб.",
-        parse_mode='Markdown'
+        f"💰 Сумма: {final_total} руб."
     )
     
     if uid in user_selections:
@@ -3335,9 +3463,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Exception: {context.error}")
     if update and update.effective_message:
         await update.effective_message.reply_text(
-            "⚠️ **Произошла ошибка**\n\n"
-            "Пожалуйста, попробуйте позже или обратитесь к администратору.",
-            parse_mode='Markdown'
+            "⚠️ Произошла ошибка\n\n"
+            "Пожалуйста, попробуйте позже или обратитесь к администратору."
         )
 
 # ========== ЗАПУСК ==========
