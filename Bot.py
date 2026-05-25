@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 12.0.0 - FULLY FIXED WITH ADMIN DELETE
+Версия: 13.0.0 - FULLY FIXED WITH ADMIN DELETE BUTTONS
 """
 
 import os
@@ -2766,7 +2766,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             text += "⬜ - товар остаётся\n"
             text += "✅ - товар будет удалён\n\n"
             text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
-            text += f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
             
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
             
@@ -2819,7 +2818,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += "✅ - товар будет удалён\n\n"
         if order:
             text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
-            text += f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
         
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
