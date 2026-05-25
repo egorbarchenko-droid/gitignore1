@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 10.0.0 - FULLY FIXED WITH NO MARKDOWN ERRORS
+Версия: 11.0.0 - FULLY FIXED WITH PICKUP AND ALL FEATURES
 """
 
 import os
@@ -183,6 +183,13 @@ axle_kb = ReplyKeyboardMarkup([
 confirm_order_kb = ReplyKeyboardMarkup([
     ["✅ Готово", "✏️ Редактировать"]
 ], resize_keyboard=True)
+
+# ========== КНОПКИ САМОВЫВОЗА ==========
+pickup_keyboard = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📍 Метро Давыдково", callback_data="pickup_davydkovo")],
+    [InlineKeyboardButton("📍 Метро Южная", callback_data="pickup_yuzhnaya")],
+    [InlineKeyboardButton("📍 Метро Строгино", callback_data="pickup_strogino")]
+])
 
 # ========== БЕЗОПАСНЫЕ ФУНКЦИИ ==========
 
@@ -1088,22 +1095,71 @@ async def get_delivery_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return OrderStates.ADDRESS
     elif choice == "Самовывоз":
         ctx.user_data['delivery_price'] = 0
-        await upd.message.reply_text("📍 Самовывоз\n\nДоступные станции:\n• Метро Давыдково\n• Метро Строгино\n• Метро Южная\n\nВведите адрес самовывоза:")
+        await upd.message.reply_text(
+            "📍 САМОВЫВОЗ\n\n"
+            "Доступные пункты выдачи:\n"
+            "1️⃣ Метро Давыдково\n"
+            "2️⃣ Метро Южная\n"
+            "3️⃣ Метро Строгино\n\n"
+            "Выберите пункт выдачи:",
+            reply_markup=pickup_keyboard
+        )
         return OrderStates.ADDRESS
     else:
         ctx.user_data['delivery_price'] = 0
         await upd.message.reply_text("🚛 Сторонняя фирма (стоимость рассчитает менеджер)\n\n📍 Введите адрес доставки:")
         return OrderStates.ADDRESS
 
+async def pickup_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора пункта самовывоза"""
+    query = upd.callback_query
+    await query.answer()
+    
+    station_map = {
+        "pickup_davydkovo": "Метро Давыдково",
+        "pickup_yuzhnaya": "Метро Южная",
+        "pickup_strogino": "Метро Строгино"
+    }
+    
+    station = station_map.get(query.data, "Метро")
+    ctx.user_data['delivery_address'] = station
+    ctx.user_data['city'] = "Москва"
+    ctx.user_data['distance'] = 0
+    ctx.user_data['delivery_price'] = 0
+    
+    await query.edit_message_text(
+        f"📍 Пункт самовывоза: {station}\n"
+        f"🏙️ Город: Москва\n"
+        f"🚚 Доставка: 0 руб.\n\n"
+        f"📞 Введите ваш контактный телефон:"
+    )
+    return OrderStates.PHONE
+
 @rate_limit
 async def get_address(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение адреса доставки"""
     full_address = upd.message.text.strip()
-    if len(full_address) < 10:
-        await upd.message.reply_text("❌ Введите полный адрес (минимум 10 символов):")
+    if len(full_address) < 5:
+        await upd.message.reply_text("❌ Введите полный адрес (минимум 5 символов):")
         return OrderStates.ADDRESS
     
     ctx.user_data['delivery_address'] = full_address
+    
+    # Если самовывоз - уже обработано через callback
+    if ctx.user_data.get('delivery_type') == "Самовывоз":
+        city = ctx.user_data.get('city', "Москва")
+        distance = ctx.user_data.get('distance', 0)
+        price = ctx.user_data.get('delivery_price', 0)
+        
+        await upd.message.reply_text(
+            f"📍 Пункт самовывоза: {full_address}\n"
+            f"🏙️ Город: {city}\n"
+            f"🚚 Доставка: {price} руб.\n\n"
+            f"📞 Введите ваш контактный телефон:"
+        )
+        return OrderStates.PHONE
+    
+    # Обычная доставка
     city = extract_city_from_address(full_address)
     distance = extract_distance_from_address(full_address)
     ctx.user_data['city'] = city
@@ -1902,15 +1958,17 @@ async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"confirm_remove_items_{order_num}")])
         kb.append([InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"view_{order_num}")])
         
-        await query.edit_message_text(
-            f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
-            f"Нажмите на товар, чтобы отметить его для удаления.\n"
-            f"Отмеченные товары будут удалены из заказа.\n\n"
-            f"⬜ - товар остаётся\n"
-            f"✅ - товар будет удалён\n\n"
-            f"После подтверждения вы сможете оставить комментарий.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
+        text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+        text += "Нажмите на товар, чтобы отметить его для удаления.\n"
+        text += "Отмеченные товары будут удалены из заказа.\n\n"
+        text += "⬜ - товар остаётся\n"
+        text += "✅ - товар будет удалён\n\n"
+        text += f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
+        text += f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
+        text += f"💳 Итого: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб.\n"
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
@@ -1951,7 +2009,16 @@ async def toggle_item_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"confirm_remove_items_{order_num}")])
     kb.append([InlineKeyboardButton("◀️ Назад к заказу", callback_data=f"view_{order_num}")])
     
-    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
+    order = get_order(order_num)
+    text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+    text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
+    text += "⬜ - товар остаётся\n"
+    text += "✅ - товар будет удалён\n\n"
+    if order:
+        text += f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
+        text += f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def confirm_remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Подтверждение удаления выбранных товаров"""
@@ -2359,8 +2426,8 @@ async def delivery_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"• 101+ км: {DELIVERY_BASE} + км × {DELIVERY_RATE_OVER_100}\n\n"
             f"📌 Самовывоз (бесплатно):\n"
             f"• Метро Давыдково\n"
-            f"• Метро Строгино\n"
-            f"• Метро Южная\n\n"
+            f"• Метро Южная\n"
+            f"• Метро Строгино\n\n"
             f"📌 Скидка на доставку от суммы заказа:\n"
             f"• от 10 000 руб. → 5%\n"
             f"• от 15 000 руб. → 10%\n"
@@ -2677,13 +2744,14 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
             kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
             
-            await query.edit_message_text(
-                f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
-                f"Нажмите на товар, чтобы отметить его для удаления.\n\n"
-                f"⬜ - товар остаётся\n"
-                f"✅ - товар будет удалён",
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
+            text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+            text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
+            text += "⬜ - товар остаётся\n"
+            text += "✅ - товар будет удалён\n\n"
+            text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+            
         except Exception as e:
             logger.error(f"Ошибка: {e}")
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
@@ -2718,6 +2786,14 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
         kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
+        
+        order = get_order(order_num)
+        text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+        text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
+        text += "⬜ - товар остаётся\n"
+        text += "✅ - товар будет удалён\n\n"
+        if order:
+            text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
         
         await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(kb))
         return
@@ -3039,7 +3115,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     refund_bonus(order['user_id'], order_num, bonus_row[0], f"Возврат бонусов при отмене заказа {order_num}")
                     await ctx.bot.send_message(order['user_id'], text=f"❌ Заказ {order_num} отменён менеджером.\n\n💰 Бонусы в размере {bonus_row[0]} руб. были списаны.")
                 else:
-                    await ctx.bot.send_message(order['user_id'], text=f"❌ Заказ {order_num} отменён менеджером.")
+                    await ctx.bot.send_message(order['user_id'], text=f"❌ Заказ {order_num} отменен менеджером.")
             finally:
                 conn.close()
         
@@ -3507,7 +3583,10 @@ def main():
             OrderStates.STYLE_CITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_style_city)],
             OrderStates.STYLE_HIGHWAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_style_highway)],
             OrderStates.DELIVERY_TYPE: [MessageHandler(filters.Regex("^(Курьером|Самовывоз|Сторонняя фирма)$"), get_delivery_type)],
-            OrderStates.ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_address)],
+            OrderStates.ADDRESS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_address),
+                CallbackQueryHandler(pickup_callback, pattern="^pickup_")
+            ],
             OrderStates.PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
             OrderStates.PART_NODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_part_node)],
             OrderStates.AXLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_axle)],
