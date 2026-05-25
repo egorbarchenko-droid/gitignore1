@@ -2373,16 +2373,16 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ========== ТРЕК-НОМЕР (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==========
 
+# ========== ТРЕК-НОМЕР (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==========
+
 async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    # ДИАГНОСТИКА
-    await upd.message.reply_text(f"📝 Бот получил сообщение: {upd.message.text}")
-    await upd.message.reply_text(f"📝 Это ответ на сообщение: {upd.message.reply_to_message is not None}")
-    
-    # ... остальной код
     """Обработка ввода трек-номера менеджера"""
     if upd.effective_user.id != MANAGER_ID:
         return
+    
+    # ДИАГНОСТИКА
+    await upd.message.reply_text(f"📝 Бот получил сообщение: {upd.message.text}")
+    await upd.message.reply_text(f"📝 Это ответ на сообщение: {upd.message.reply_to_message is not None}")
     
     tracking = upd.message.text.strip()
     
@@ -2457,32 +2457,54 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"[TRACK] Обновляем заказ {order_num}")
     
-    success = update_order(order_num, tracking_number=tracking, status='shipped')
-    
-    if success:
-        # Уведомляем клиента
-        try:
-            await ctx.bot.send_message(
-                order['user_id'],
-                text=f"📦 **Заказ {order_num} отправлен!**\n\n📮 Трек-номер: `{tracking}`",
+    # ПРЯМОЕ ОБНОВЛЕНИЕ ЧЕРЕЗ SQL (обходим проблему с update_order)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE orders 
+            SET tracking_number = ?, status = ?, status_text = ? 
+            WHERE order_number = ?
+        """, (tracking, 'shipped', '🚚 Отправлен', order_num))
+        conn.commit()
+        
+        # Проверяем
+        c.execute("SELECT tracking_number, status FROM orders WHERE order_number = ?", (order_num,))
+        result = c.fetchone()
+        
+        if result and result[0] == tracking:
+            logger.info(f"[TRACK] Успешно обновлён!")
+            
+            # Уведомляем клиента
+            try:
+                await ctx.bot.send_message(
+                    order['user_id'],
+                    text=f"📦 **Заказ {order_num} отправлен!**\n\n📮 Трек-номер: `{tracking}`",
+                    parse_mode='Markdown'
+                )
+                logger.info(f"[TRACK] Уведомление отправлено клиенту")
+            except Exception as e:
+                logger.error(f"Ошибка уведомления: {e}")
+            
+            await upd.message.reply_text(
+                f"✅ **Трек-номер добавлен!**\n\n"
+                f"📦 Заказ: `{order_num}`\n"
+                f"📮 Трек: `{tracking}`\n"
+                f"👤 Клиент: {order.get('user_name', '')}",
                 parse_mode='Markdown'
             )
-            logger.info(f"[TRACK] Уведомление отправлено клиенту")
-        except Exception as e:
-            logger.error(f"Ошибка уведомления: {e}")
-        
-        await upd.message.reply_text(
-            f"✅ **Трек-номер добавлен!**\n\n"
-            f"📦 Заказ: `{order_num}`\n"
-            f"📮 Трек: `{tracking}`\n"
-            f"👤 Клиент: {order.get('user_name', '')}",
-            parse_mode='Markdown'
-        )
-    else:
-        await upd.message.reply_text(f"❌ Ошибка при обновлении заказа {order_num}")
+        else:
+            logger.error(f"[TRACK] Не удалось обновить! result={result}")
+            await upd.message.reply_text(f"❌ Ошибка при обновлении заказа {order_num}")
+            
+    except Exception as e:
+        logger.error(f"[TRACK] SQL ошибка: {e}")
+        await upd.message.reply_text(f"❌ Ошибка БД: {str(e)[:100]}")
+    finally:
+        conn.close()
     
     ctx.user_data.pop('track_for', None)
-
+    
 # ========== ОТВЕТ МЕНЕДЖЕРА ==========
 
 @require_manager
