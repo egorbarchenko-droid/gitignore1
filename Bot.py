@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 13.0.0 - FULLY FIXED WITH ADMIN DELETE BUTTONS
+Версия: 14.0.0 - FULLY FIXED WITH ADMIN DELETE BUTTONS
 """
 
 import os
