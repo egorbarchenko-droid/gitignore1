@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 4.2.0 - FULLY FIXED WITH TRACKING
+Версия: 4.3.0 - FULLY FIXED WITH TRACKING
 """
 
 import os
@@ -2120,10 +2120,12 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = query.data
     await query.answer()
     
+    # Обновление списка
     if data == "admin_refresh":
         await admin_menu(upd, ctx, query.message)
         return
     
+    # Статистика
     if data == "admin_stats":
         orders = get_all_orders()
         total_orders = len(orders)
@@ -2149,6 +2151,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # Тестовый заказ
     if data == "admin_fix":
         conn = sqlite3.connect(DB_PATH)
         try:
@@ -2171,10 +2174,12 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await admin_menu(upd, ctx, query.message)
         return
     
+    # Назад
     if data == "admin_back":
         await admin_menu(upd, ctx, query.message)
         return
     
+    # Просмотр заказа
     if data.startswith("admin_order_"):
         order_num = data[12:]
         order = get_order(order_num)
@@ -2209,26 +2214,30 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     # ========== КРИТИЧЕСКАЯ ЧАСТЬ: ОТПРАВЛЕН (SHIP) ==========
     if data.startswith("ship_"):
+        # Извлекаем номер заказа
         order_num = data[5:]
         order_num = clean_order_number(order_num)
         
         if not order_num:
-            await query.edit_message_text("❌ Не удалось определить номер заказа. Пожалуйста, откройте заказ заново.")
+            await query.edit_message_text("❌ Не удалось определить номер заказа")
+            logger.error(f"[SHIP] Ошибка: не удалось извлечь номер из {data}")
             return
         
         # Проверяем существование заказа
         order = get_order(order_num)
         if not order:
             await query.edit_message_text(f"❌ Заказ {order_num} не найден в базе данных!")
+            logger.error(f"[SHIP] Заказ {order_num} не найден")
             return
         
         # Сохраняем в user_data
         ctx.user_data['track_for'] = order_num
-        ctx.user_data['track_order_status'] = order.get('status')
         
-        logger.info(f"[SHIP] Установлен track_for для заказа: {order_num}, статус: {order.get('status')}")
+        # Логируем
+        logger.info(f"[SHIP] ✅ Сохранён заказ: {order_num}, статус: {order.get('status')}")
+        logger.info(f"[SHIP] user_data keys: {list(ctx.user_data.keys())}")
         
-        # Отправляем сообщение с ПОНЯТНЫМ указанием ответить
+        # Отправляем сообщение С НОМЕРОМ ЗАКАЗА
         await query.edit_message_text(
             f"📦 **Введите трек-номер для заказа {order_num}:**\n\n"
             f"⬇️ **ВАЖНО!** ⬇️\n\n"
@@ -2243,6 +2252,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     
     # ========== ОСТАЛЬНЫЕ СТАТУСЫ ==========
+    
+    # Оплачен
     if data.startswith("pay_"):
         order_num = data[4:]
         order_num = clean_order_number(order_num)
@@ -2262,13 +2273,14 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                             bonus = int(eligible_for_bonus * bonus_percent / 100)
                             if bonus > 0:
                                 add_bonus(order['user_id'], order_num, bonus, f"Заказ {order_num} ({bonus_percent}% от {eligible_for_bonus} руб.)")
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"Ошибка начисления бонусов: {e}")
             await query.edit_message_text(query.message.text + "\n\n✅ **СТАТУС: ОПЛАЧЕН**", parse_mode='Markdown')
         else:
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Заказан
     if data.startswith("ordered_"):
         order_num = data[8:]
         order_num = clean_order_number(order_num)
@@ -2281,6 +2293,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Товар поступил
     if data.startswith("arrived_"):
         order_num = data[8:]
         order_num = clean_order_number(order_num)
@@ -2293,6 +2306,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Готов к выдаче
     if data.startswith("ready_"):
         order_num = data[6:]
         order_num = clean_order_number(order_num)
@@ -2305,6 +2319,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Доставлен
     if data.startswith("del_"):
         order_num = data[4:]
         order_num = clean_order_number(order_num)
@@ -2317,6 +2332,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Выдан
     if data.startswith("issued_"):
         order_num = data[7:]
         order_num = clean_order_number(order_num)
@@ -2329,6 +2345,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
+    # Отменить
     if data.startswith("cancel_"):
         order_num = data[7:]
         order_num = clean_order_number(order_num)
@@ -2357,7 +2374,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ========== ТРЕК-НОМЕР (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==========
 
 async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода трек-номера менеджера - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    """Обработка ввода трек-номера менеджера"""
     if upd.effective_user.id != MANAGER_ID:
         return
     
@@ -2373,11 +2390,11 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"[TRACK] Получен трек-номер: {tracking}")
     logger.info(f"[TRACK] user_data keys: {list(ctx.user_data.keys())}")
-    logger.info(f"[TRACK] Есть reply_to_message: {upd.message.reply_to_message is not None}")
+    logger.info(f"[TRACK] reply_to_message: {upd.message.reply_to_message is not None}")
     
     order_num = None
     
-    # Способ 1: Из user_data (если кнопка была нажата)
+    # Способ 1: Из user_data
     if 'track_for' in ctx.user_data:
         order_num = ctx.user_data.pop('track_for')
         logger.info(f"[TRACK] Найден из user_data: {order_num}")
@@ -2386,27 +2403,29 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not order_num and upd.message.reply_to_message:
         reply_text = upd.message.reply_to_message.text or ""
         logger.info(f"[TRACK] Reply текст: {reply_text[:100]}")
-        match = re.search(r'(RVN-[A-Z0-9]{6})', reply_text)
+        match = re.search(r'заказа (RVN-[A-Z0-9]{6})', reply_text)
+        if not match:
+            match = re.search(r'(RVN-[A-Z0-9]{6})', reply_text)
         if match:
             order_num = match.group(1)
             logger.info(f"[TRACK] Найден из reply: {order_num}")
     
-    # Способ 3: Поиск в истории сообщений
+    # Способ 3: Поиск в истории
     if not order_num:
-        logger.info("[TRACK] Поиск в истории сообщений...")
+        logger.info("[TRACK] Поиск в истории...")
         try:
             async for msg in upd.message.chat.iter_history(limit=30):
                 if msg.text and 'RVN-' in msg.text:
                     match = re.search(r'(RVN-[A-Z0-9]{6})', msg.text)
                     if match:
                         order_num = match.group(1)
-                        logger.info(f"[TRACK] Найден в истории: {order_num} (msg: {msg.text[:50]})")
+                        logger.info(f"[TRACK] Найден в истории: {order_num}")
                         break
         except Exception as e:
             logger.error(f"Ошибка поиска: {e}")
     
     if not order_num:
-        logger.warning(f"[TRACK] НЕ УДАЛОСЬ НАЙТИ ЗАКАЗ для трека: {tracking}")
+        logger.warning(f"[TRACK] ЗАКАЗ НЕ НАЙДЕН! Трек: {tracking}")
         await upd.message.reply_text(
             "❌ **Не удалось определить номер заказа.**\n\n"
             "**Пожалуйста, выполните следующие шаги:**\n\n"
@@ -2415,7 +2434,6 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "3️⃣ **НАЖМИТЕ НА СООБЩЕНИЕ БОТА** и выберите «Ответить»\n"
             "4️⃣ Введите трек-номер\n"
             "5️⃣ Отправьте\n\n"
-            "❌ Не пишите просто в чат - бот не поймёт!\n\n"
             f"Ваш трек-номер: `{tracking}`",
             parse_mode='Markdown'
         )
@@ -2428,43 +2446,35 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     order = get_order(order_num)
     if not order:
-        await upd.message.reply_text(f"❌ Заказ {order_num} не найден в базе данных!")
+        await upd.message.reply_text(f"❌ Заказ {order_num} не найден!")
         return
     
-    logger.info(f"[TRACK] Обновление заказа {order_num}, текущий статус: {order.get('status')}")
+    logger.info(f"[TRACK] Обновляем заказ {order_num}")
     
-    # Обновляем заказ
     success = update_order(order_num, tracking_number=tracking, status='shipped')
     
-    if not success:
-        await upd.message.reply_text(f"❌ Ошибка при обновлении заказа {order_num}")
-        return
-    
-    # Отправляем уведомление клиенту
-    try:
-        await ctx.bot.send_message(
-            order['user_id'],
-            text=f"📦 **Заказ {order_num} отправлен!**\n\n"
-                 f"📮 **Трек-номер для отслеживания:** `{tracking}`\n\n"
-                 f"Вы можете отслеживать посылку на сайте почты.",
+    if success:
+        # Уведомляем клиента
+        try:
+            await ctx.bot.send_message(
+                order['user_id'],
+                text=f"📦 **Заказ {order_num} отправлен!**\n\n📮 Трек-номер: `{tracking}`",
+                parse_mode='Markdown'
+            )
+            logger.info(f"[TRACK] Уведомление отправлено клиенту")
+        except Exception as e:
+            logger.error(f"Ошибка уведомления: {e}")
+        
+        await upd.message.reply_text(
+            f"✅ **Трек-номер добавлен!**\n\n"
+            f"📦 Заказ: `{order_num}`\n"
+            f"📮 Трек: `{tracking}`\n"
+            f"👤 Клиент: {order.get('user_name', '')}",
             parse_mode='Markdown'
         )
-        logger.info(f"[TRACK] Уведомление отправлено клиенту {order['user_id']}")
-    except Exception as e:
-        logger.error(f"Не удалось отправить уведомление: {e}")
+    else:
+        await upd.message.reply_text(f"❌ Ошибка при обновлении заказа {order_num}")
     
-    # Подтверждение менеджеру
-    await upd.message.reply_text(
-        f"✅ **Трек-номер успешно добавлен!**\n\n"
-        f"📦 Заказ: `{order_num}`\n"
-        f"📮 Трек-номер: `{tracking}`\n"
-        f"👤 Клиент: {order.get('user_name', 'Неизвестно')}\n"
-        f"📞 Телефон: {order.get('phone', 'Не указан')}\n\n"
-        f"Клиент получил уведомление.",
-        parse_mode='Markdown'
-    )
-    
-    # Очищаем
     ctx.user_data.pop('track_for', None)
 
 # ========== ОТВЕТ МЕНЕДЖЕРА ==========
