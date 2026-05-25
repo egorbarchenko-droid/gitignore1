@@ -2374,6 +2374,12 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ========== ТРЕК-НОМЕР (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==========
 
 async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    # ДИАГНОСТИКА
+    await upd.message.reply_text(f"📝 Бот получил сообщение: {upd.message.text}")
+    await upd.message.reply_text(f"📝 Это ответ на сообщение: {upd.message.reply_to_message is not None}")
+    
+    # ... остальной код
     """Обработка ввода трек-номера менеджера"""
     if upd.effective_user.id != MANAGER_ID:
         return
