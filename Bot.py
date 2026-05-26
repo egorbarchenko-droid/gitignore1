@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 16.0.2 - SESSION FIXED (Client & Admin Remove)
+Версия: 16.0.3 - FULLY FIXED (Admin & Client Remove)
 """
 
 import os
@@ -1896,7 +1896,7 @@ async def main_menu_back(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await start(upd, ctx)
 
-# ========== КЛИЕНТ УДАЛЯЕТ ТОВАРЫ (ИСПРАВЛЕННАЯ ВЕРСИЯ) ==========
+# ========== КЛИЕНТ УДАЛЯЕТ ТОВАРЫ ==========
 
 @require_order_owner
 async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1975,6 +1975,7 @@ async def client_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = upd.callback_query
     await query.answer()
     
+    # Формат: client_toggle_RVN-XXXXXX_0
     parts = query.data.split('_')
     if len(parts) < 4:
         await query.edit_message_text("❌ Ошибка формата данных")
@@ -1985,8 +1986,6 @@ async def client_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     
     session_key = f"{uid}_{order_num}"
-    
-    logger.info(f"[CLIENT_TOGGLE] order_num: {order_num}, item_idx: {item_idx}")
     
     if session_key not in client_remove_sessions:
         await query.edit_message_text("❌ Сессия истекла. Начните заново.")
@@ -2025,7 +2024,12 @@ async def client_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text += f"🚚 Доставка: {order.get('delivery_type', 'не указана')} | {order.get('delivery_price', 0)} руб.\n"
         text += f"💰 Сумма запчастей: {order.get('total_price', 0)} руб.\n"
     
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        # Игнорируем ошибку "Message is not modified"
+        if "Message is not modified" not in str(e):
+            logger.error(f"Ошибка при обновлении сообщения: {e}")
 
 
 async def client_confirm_remove_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2037,8 +2041,6 @@ async def client_confirm_remove_callback(upd: Update, ctx: ContextTypes.DEFAULT_
     uid = query.from_user.id
     
     session_key = f"{uid}_{order_num}"
-    
-    logger.info(f"[CLIENT_CONFIRM] Подтверждение удаления, заказ: {order_num}")
     
     if session_key not in client_remove_sessions:
         await query.edit_message_text("❌ Сессия истекла. Начните заново.")
@@ -2299,8 +2301,7 @@ async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "VIN должен содержать 17 символов (только буквы и цифры, без I, O, Q).\n"
             "Попробуйте ещё раз:"
         )
-        return GarageStates.VIN
-    
+        return GarageStates.VIN    
     ctx.user_data['new_car_vin'] = vin
     await upd.message.reply_text(
         f"🚗 VIN: {vin}\n\n"
@@ -2786,7 +2787,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if data.startswith("admin_toggle_item_"):
         await query.answer()
-        rest = data[19:]
+        # Формат: admin_toggle_item_RVN-XXXXXX_0
+        # Убираем префикс "admin_toggle_item_"
+        rest = data[18:]
         last_underscore = rest.rfind('_')
         if last_underscore == -1:
             await query.edit_message_text("❌ Ошибка формата данных")
@@ -2833,7 +2836,11 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if order:
             text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
         
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Ошибка при обновлении сообщения: {e}")
         return
     
     if data.startswith("admin_confirm_remove_"):
@@ -3570,6 +3577,9 @@ async def finalize_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     logger.error(f"Exception: {context.error}")
+    # Игнорируем ошибку "Message is not modified"
+    if "Message is not modified" in str(context.error):
+        return
     if update and update.effective_message:
         await update.effective_message.reply_text(
             "⚠️ Произошла ошибка\n\n"
