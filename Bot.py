@@ -2718,190 +2718,204 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
-    if data.startswith("admin_remove_items_"):
-        order_num = data[18:]
-        logger.info(f"[ADMIN_REMOVE] Начало удаления товаров для заказа: {order_num}")
-        
-        order = get_order(order_num)
-        if not order:
-            await query.edit_message_text("❌ Заказ не найден")
-            return
-        
-        final_order = order.get('final_order', '')
-        logger.info(f"[ADMIN_REMOVE] final_order: {final_order[:200] if final_order else 'None'}")
-        
-        if not final_order or final_order in [None, 'None', '[]', '{}']:
-            await query.edit_message_text("❌ В заказе нет товаров для удаления")
-            return
-        
-        try:
-            selected_parts = ast.literal_eval(final_order)
-            logger.info(f"[ADMIN_REMOVE] Распаршено товаров: {len(selected_parts) if isinstance(selected_parts, list) else 0}")
-            
-            if not isinstance(selected_parts, list) or not selected_parts:
-                await query.edit_message_text("❌ Нет товаров для удаления")
-                return
-            
-            ctx.user_data['admin_remove_order'] = order_num
-            ctx.user_data['admin_remove_parts'] = selected_parts.copy()
-            ctx.user_data['admin_remove_selected'] = set()
-            
-            # СОЗДАЕМ КНОПКИ ДЛЯ КАЖДОГО ТОВАРА
-            kb = []
-            for i, part in enumerate(selected_parts):
-                if isinstance(part, dict):
-                    part_name = part.get('name', 'Неизвестно')[:35]
-                    part_price = part.get('price', 0)
-                    kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
-                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
-                else:
-                    kb.append([InlineKeyboardButton(f"⬜ {str(part)[:35]}", 
-                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
-            
-            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
-            kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
-            
-            text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
-            text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
-            text += "⬜ - товар остаётся\n"
-            text += "✅ - товар будет удалён\n\n"
-            text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
-            
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-            
-        except Exception as e:
-            logger.error(f"[ADMIN_REMOVE] Ошибка: {e}")
-            await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
+   # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
+if data.startswith("admin_remove_items_"):
+    order_num = data[18:]  # "admin_remove_items_RVN-XXX"
+    logger.info(f"[ADMIN_REMOVE] Начало удаления товаров для заказа: {order_num}")
+    
+    order = get_order(order_num)
+    if not order:
+        await query.edit_message_text("❌ Заказ не найден")
         return
     
-    if data.startswith("admin_toggle_item_"):
-        await query.answer()
-        parts = data.split('_')
-        logger.info(f"[ADMIN_TOGGLE] Получены данные: {parts}")
+    final_order = order.get('final_order', '')
+    logger.info(f"[ADMIN_REMOVE] final_order: {final_order[:200] if final_order else 'None'}")
+    
+    if not final_order or final_order in [None, 'None', '[]', '{}']:
+        await query.edit_message_text("❌ В заказе нет товаров для удаления")
+        return
+    
+    try:
+        selected_parts = ast.literal_eval(final_order)
+        logger.info(f"[ADMIN_REMOVE] Распаршено товаров: {len(selected_parts) if isinstance(selected_parts, list) else 0}")
         
-        order_num = parts[3]
-        item_idx = int(parts[4])
-        
-        if ctx.user_data.get('admin_remove_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла. Начните заново.")
+        if not isinstance(selected_parts, list) or not selected_parts:
+            await query.edit_message_text("❌ Нет товаров для удаления")
             return
         
-        selected = ctx.user_data.get('admin_remove_selected', set())
-        if item_idx in selected:
-            selected.remove(item_idx)
-        else:
-            selected.add(item_idx)
-        ctx.user_data['admin_remove_selected'] = selected
+        # Сохраняем в user_data
+        ctx.user_data['admin_remove_order'] = order_num
+        ctx.user_data['admin_remove_parts'] = selected_parts.copy()
+        ctx.user_data['admin_remove_selected'] = set()
         
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
-        
+        # СОЗДАЕМ КНОПКИ ДЛЯ КАЖДОГО ТОВАРА
         kb = []
         for i, part in enumerate(selected_parts):
             if isinstance(part, dict):
                 part_name = part.get('name', 'Неизвестно')[:35]
                 part_price = part.get('price', 0)
-                check = "✅" if i in selected else "⬜"
-                kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
+                kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
                                                callback_data=f"admin_toggle_item_{order_num}_{i}")])
             else:
-                check = "✅" if i in selected else "⬜"
-                kb.append([InlineKeyboardButton(f"{check} {str(part)[:35]}", 
+                kb.append([InlineKeyboardButton(f"⬜ {str(part)[:35]}", 
                                                callback_data=f"admin_toggle_item_{order_num}_{i}")])
         
         kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
         kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
         
-        order = get_order(order_num)
         text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
         text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
         text += "⬜ - товар остаётся\n"
         text += "✅ - товар будет удалён\n\n"
-        if order:
-            text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
+        text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
         
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        
+    except Exception as e:
+        logger.error(f"[ADMIN_REMOVE] Ошибка: {e}")
+        await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
+    return
+
+if data.startswith("admin_toggle_item_"):
+    await query.answer()
+    # ВАЖНО: правильный парсинг callback data
+    # Формат: admin_toggle_item_RVN-XXX_0
+    # Удаляем префикс "admin_toggle_item_" (19 символов)
+    rest = data[19:]  # "RVN-XXX_0"
+    last_underscore = rest.rfind('_')
+    if last_underscore == -1:
+        await query.edit_message_text("❌ Ошибка формата данных")
         return
     
-    if data.startswith("admin_confirm_remove_"):
-        order_num = data[19:]
-        logger.info(f"[ADMIN_CONFIRM] Подтверждение удаления для заказа: {order_num}")
-        
-        if ctx.user_data.get('admin_remove_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла")
-            return
-        
-        selected_items = ctx.user_data.get('admin_remove_selected', set())
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
-        
-        logger.info(f"[ADMIN_CONFIRM] Выбрано для удаления: {selected_items}")
-        
-        if not selected_items:
-            await query.edit_message_text("❌ Не выбрано ни одного товара")
+    order_num = rest[:last_underscore]  # "RVN-XXX"
+    item_idx = int(rest[last_underscore + 1:])  # "0"
+    
+    logger.info(f"[ADMIN_TOGGLE] order_num: {order_num}, item_idx: {item_idx}")
+    
+    if ctx.user_data.get('admin_remove_order') != order_num:
+        await query.edit_message_text("❌ Сессия истекла. Начните заново.")
         return
-        
-        if len(selected_items) >= len(selected_parts):
-            await query.edit_message_text(
-                "❌ Нельзя удалить все товары из заказа!\n\n"
-                "В заказе должен остаться хотя бы один товар."
-            )
-            return
-        
-        remaining_parts = []
-        removed_names = []
-        
-        for i, part in enumerate(selected_parts):
-            if i not in selected_items:
-                remaining_parts.append(part)
-            else:
-                if isinstance(part, dict):
-                    removed_names.append(part.get('name', 'Товар'))
-                else:
-                    removed_names.append(str(part))
-        
-        new_total = sum(p.get('price', 0) for p in remaining_parts if isinstance(p, dict))
-        delivery_price = get_order(order_num).get('delivery_price', 0)
-        
-        logger.info(f"[ADMIN_CONFIRM] Новая сумма: {new_total}, удалено: {removed_names}")
-        
-        update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
-        
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            c = conn.cursor()
-            c.execute('''INSERT INTO order_changes (order_number, user_id, action, old_value, new_value, comment, created_at)
-                         VALUES (?,?,?,?,?,?,?)''',
-                      (order_num, MANAGER_ID, 'remove_items', ', '.join(removed_names), 
-                       f"Удалено {len(selected_items)} товаров", "Удаление товаров администратором", 
-                       datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Ошибка сохранения истории: {e}")
-        finally:
-            conn.close()
-        
-        order = get_order(order_num)
-        if order:
-            await ctx.bot.send_message(
-                order['user_id'],
-                text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
-                     f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
-                     f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-                     f"По вопросам обращайтесь к менеджеру."
-            )
-        
+    
+    selected = ctx.user_data.get('admin_remove_selected', set())
+    if item_idx in selected:
+        selected.remove(item_idx)
+    else:
+        selected.add(item_idx)
+    ctx.user_data['admin_remove_selected'] = selected
+    
+    selected_parts = ctx.user_data.get('admin_remove_parts', [])
+    
+    # Обновляем клавиатуру
+    kb = []
+    for i, part in enumerate(selected_parts):
+        if isinstance(part, dict):
+            part_name = part.get('name', 'Неизвестно')[:35]
+            part_price = part.get('price', 0)
+            check = "✅" if i in selected else "⬜"
+            kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
+                                           callback_data=f"admin_toggle_item_{order_num}_{i}")])
+        else:
+            check = "✅" if i in selected else "⬜"
+            kb.append([InlineKeyboardButton(f"{check} {str(part)[:35]}", 
+                                           callback_data=f"admin_toggle_item_{order_num}_{i}")])
+    
+    kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
+    kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
+    
+    order = get_order(order_num)
+    text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
+    text += "Нажмите на товар, чтобы отметить его для удаления.\n\n"
+    text += "⬜ - товар остаётся\n"
+    text += "✅ - товар будет удалён\n\n"
+    if order:
+        text += f"💰 Текущая сумма: {order.get('total_price', 0)} руб.\n"
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+    return
+
+if data.startswith("admin_confirm_remove_"):
+    order_num = data[19:]  # "admin_confirm_remove_RVN-XXX"
+    logger.info(f"[ADMIN_CONFIRM] Подтверждение удаления для заказа: {order_num}")
+    
+    if ctx.user_data.get('admin_remove_order') != order_num:
+        await query.edit_message_text("❌ Сессия истекла")
+        return
+    
+    selected_items = ctx.user_data.get('admin_remove_selected', set())
+    selected_parts = ctx.user_data.get('admin_remove_parts', [])
+    
+    logger.info(f"[ADMIN_CONFIRM] Выбрано для удаления: {selected_items}")
+    
+    if not selected_items:
+        await query.edit_message_text("❌ Не выбрано ни одного товара")
+        return
+    
+    # Проверка: нельзя удалить все товары
+    if len(selected_items) >= len(selected_parts):
         await query.edit_message_text(
-            f"✅ Товары удалены!\n\n"
-            f"📦 Заказ: {order_num}\n"
-            f"🗑️ Удалено: {len(selected_items)} товаров\n"
-            f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-            f"Клиент получил уведомление."
+            "❌ Нельзя удалить все товары из заказа!\n\n"
+            "В заказе должен остаться хотя бы один товар."
         )
-        
-        ctx.user_data.pop('admin_remove_order', None)
-        ctx.user_data.pop('admin_remove_parts', None)
-        ctx.user_data.pop('admin_remove_selected', None)
         return
+    
+    remaining_parts = []
+    removed_names = []
+    
+    for i, part in enumerate(selected_parts):
+        if i not in selected_items:
+            remaining_parts.append(part)
+        else:
+            if isinstance(part, dict):
+                removed_names.append(part.get('name', 'Товар'))
+            else:
+                removed_names.append(str(part))
+    
+    new_total = sum(p.get('price', 0) for p in remaining_parts if isinstance(p, dict))
+    delivery_price = get_order(order_num).get('delivery_price', 0)
+    
+    logger.info(f"[ADMIN_CONFIRM] Новая сумма: {new_total}, удалено: {removed_names}")
+    
+    # Обновляем заказ
+    update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
+    
+    # Сохраняем историю
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        c = conn.cursor()
+        c.execute('''INSERT INTO order_changes (order_number, user_id, action, old_value, new_value, comment, created_at)
+                     VALUES (?,?,?,?,?,?,?)''',
+                  (order_num, MANAGER_ID, 'remove_items', ', '.join(removed_names), 
+                   f"Удалено {len(selected_items)} товаров", "Удаление товаров администратором", 
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка сохранения истории: {e}")
+    finally:
+        conn.close()
+    
+    order = get_order(order_num)
+    if order:
+        await ctx.bot.send_message(
+            order['user_id'],
+            text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
+                 f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
+                 f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+                 f"По вопросам обращайтесь к менеджеру."
+        )
+    
+    await query.edit_message_text(
+        f"✅ Товары удалены!\n\n"
+        f"📦 Заказ: {order_num}\n"
+        f"🗑️ Удалено: {len(selected_items)} товаров\n"
+        f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+        f"Клиент получил уведомление."
+    )
+    
+    # Очищаем сессию
+    ctx.user_data.pop('admin_remove_order', None)
+    ctx.user_data.pop('admin_remove_parts', None)
+    ctx.user_data.pop('admin_remove_selected', None)
+    return
     
     # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
     if data.startswith("admin_add_item_"):
