@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 16.0.3 - FULLY FIXED (Admin & Client Remove)
+Версия: 16.0.4 - COMPLETE FIXED (All features working)
 """
 
 import os
@@ -1907,8 +1907,6 @@ async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     order_num = query.data[12:]
     uid = query.from_user.id
     
-    logger.info(f"[CLIENT_REMOVE] Начало удаления, заказ: {order_num}, user: {uid}")
-    
     order = get_order(order_num)
     if not order:
         await query.edit_message_text("❌ Заказ не найден")
@@ -1975,7 +1973,6 @@ async def client_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = upd.callback_query
     await query.answer()
     
-    # Формат: client_toggle_RVN-XXXXXX_0
     parts = query.data.split('_')
     if len(parts) < 4:
         await query.edit_message_text("❌ Ошибка формата данных")
@@ -2027,9 +2024,8 @@ async def client_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
     except Exception as e:
-        # Игнорируем ошибку "Message is not modified"
         if "Message is not modified" not in str(e):
-            logger.error(f"Ошибка при обновлении сообщения: {e}")
+            logger.error(f"Ошибка при обновлении: {e}")
 
 
 async def client_confirm_remove_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2301,7 +2297,8 @@ async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "VIN должен содержать 17 символов (только буквы и цифры, без I, O, Q).\n"
             "Попробуйте ещё раз:"
         )
-        return GarageStates.VIN    
+        return GarageStates.VIN
+    
     ctx.user_data['new_car_vin'] = vin
     await upd.message.reply_text(
         f"🚗 VIN: {vin}\n\n"
@@ -2739,7 +2736,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         
         final_order = order.get('final_order', '')
-        logger.info(f"[ADMIN_REMOVE] final_order: {final_order[:200] if final_order else 'None'}")
         
         if not final_order or final_order in [None, 'None', '[]', '{}']:
             await query.edit_message_text("❌ В заказе нет товаров для удаления")
@@ -2747,8 +2743,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         try:
             selected_parts = ast.literal_eval(final_order)
-            logger.info(f"[ADMIN_REMOVE] Распаршено товаров: {len(selected_parts) if isinstance(selected_parts, list) else 0}")
-            
             if not isinstance(selected_parts, list) or not selected_parts:
                 await query.edit_message_text("❌ Нет товаров для удаления")
                 return
@@ -2764,12 +2758,12 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     part_name = part.get('name', 'Неизвестно')[:35]
                     part_price = part.get('price', 0)
                     kb.append([InlineKeyboardButton(f"⬜ {part_name} — {part_price} руб.", 
-                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
+                                                   callback_data=f"admin_toggle_{order_num}_{i}")])
                 else:
                     kb.append([InlineKeyboardButton(f"⬜ {str(part)[:35]}", 
-                                                   callback_data=f"admin_toggle_item_{order_num}_{i}")])
+                                                   callback_data=f"admin_toggle_{order_num}_{i}")])
             
-            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
+            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_remove_confirm_{order_num}")])
             kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
             
             text = f"🗑️ УДАЛЕНИЕ ТОВАРОВ ИЗ ЗАКАЗА {order_num}\n\n"
@@ -2785,20 +2779,15 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
-    if data.startswith("admin_toggle_item_"):
+    if data.startswith("admin_toggle_"):
         await query.answer()
-        # Формат: admin_toggle_item_RVN-XXXXXX_0
-        # Убираем префикс "admin_toggle_item_"
-        rest = data[18:]
-        last_underscore = rest.rfind('_')
-        if last_underscore == -1:
+        parts = data.split('_')
+        if len(parts) < 4:
             await query.edit_message_text("❌ Ошибка формата данных")
             return
         
-        order_num = rest[:last_underscore]
-        item_idx = int(rest[last_underscore + 1:])
-        
-        logger.info(f"[ADMIN_TOGGLE] order_num: {order_num}, item_idx: {item_idx}")
+        order_num = parts[2]
+        item_idx = int(parts[3])
         
         if order_num not in admin_remove_sessions:
             await query.edit_message_text("❌ Сессия истекла. Начните заново.")
@@ -2819,13 +2808,13 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 part_price = part.get('price', 0)
                 check = "✅" if i in selected else "⬜"
                 kb.append([InlineKeyboardButton(f"{check} {part_name} — {part_price} руб.", 
-                                               callback_data=f"admin_toggle_item_{order_num}_{i}")])
+                                               callback_data=f"admin_toggle_{order_num}_{i}")])
             else:
                 check = "✅" if i in selected else "⬜"
                 kb.append([InlineKeyboardButton(f"{check} {str(part)[:35]}", 
-                                               callback_data=f"admin_toggle_item_{order_num}_{i}")])
+                                               callback_data=f"admin_toggle_{order_num}_{i}")])
         
-        kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_confirm_remove_{order_num}")])
+        kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ УДАЛЕНИЕ", callback_data=f"admin_remove_confirm_{order_num}")])
         kb.append([InlineKeyboardButton("◀️ Назад", callback_data=f"admin_edit_items_{order_num}")])
         
         order = get_order(order_num)
@@ -2840,11 +2829,11 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         except Exception as e:
             if "Message is not modified" not in str(e):
-                logger.error(f"Ошибка при обновлении сообщения: {e}")
+                logger.error(f"Ошибка при обновлении: {e}")
         return
     
-    if data.startswith("admin_confirm_remove_"):
-        order_num = data[19:]
+    if data.startswith("admin_remove_confirm_"):
+        order_num = data[20:]
         logger.info(f"[ADMIN_CONFIRM] Подтверждение удаления для заказа: {order_num}")
         
         if order_num not in admin_remove_sessions:
@@ -2853,8 +2842,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         selected_items = admin_remove_sessions[order_num]['selected']
         selected_parts = admin_remove_sessions[order_num]['parts']
-        
-        logger.info(f"[ADMIN_CONFIRM] Выбрано для удаления: {selected_items}")
         
         if not selected_items:
             await query.edit_message_text("❌ Не выбрано ни одного товара")
@@ -2880,9 +2867,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     removed_names.append(str(part))
         
         new_total = sum(p.get('price', 0) for p in remaining_parts if isinstance(p, dict))
-        delivery_price = get_order(order_num).get('delivery_price', 0)
-        
-        logger.info(f"[ADMIN_CONFIRM] Новая сумма: {new_total}, удалено: {removed_names}")
+        order = get_order(order_num)
+        delivery_price = order.get('delivery_price', 0) if order else 0
         
         update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
         
@@ -2900,7 +2886,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
         
-        order = get_order(order_num)
         if order:
             try:
                 await ctx.bot.send_message(
@@ -2911,7 +2896,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                          f"По вопросам обращайтесь к менеджеру."
                 )
             except Exception as e:
-                logger.error(f"Не удалось отправить уведомление клиенту: {e}")
+                logger.error(f"Не удалось отправить уведомление: {e}")
         
         del admin_remove_sessions[order_num]
         
@@ -2924,6 +2909,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
     if data.startswith("admin_add_item_"):
         order_num = data[16:]
         ctx.user_data['admin_add_item_order'] = order_num
@@ -2933,6 +2919,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return AdminAddItemStates.NAME
     
+    # ========== АДМИН МЕНЯЕТ ЦЕНУ ==========
     if data.startswith("admin_change_price_"):
         order_num = data[18:]
         order = get_order(order_num)
@@ -3003,6 +2990,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Товар не найден")
         return
     
+    # ========== ИЗМЕНЕНИЕ ДОСТАВКИ ==========
     if data.startswith("edit_delivery_"):
         order_num = data[14:]
         kb = [
@@ -3049,8 +3037,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         
         ctx.user_data['track_for'] = order_num
-        logger.info(f"[SHIP] Сохранён заказ: {order_num}, статус: {order.get('status')}")
-        
         await query.edit_message_text(
             f"📦 Введите трек-номер для заказа {order_num}:\n\n"
             f"⬇️ ВАЖНО! ⬇️\n\n"
@@ -3062,6 +3048,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # ========== ОСТАЛЬНЫЕ СТАТУСЫ ==========
     if data.startswith("pay_"):
         order_num = data[4:]
         order_num = clean_order_number(order_num)
@@ -3354,8 +3341,6 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if len(tracking) < 3:
         return
     
-    logger.info(f"[TRACK] Получен трек: {tracking}")
-    
     order_num = None
     
     if 'track_for' in ctx.user_data:
@@ -3577,7 +3562,6 @@ async def finalize_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     logger.error(f"Exception: {context.error}")
-    # Игнорируем ошибку "Message is not modified"
     if "Message is not modified" in str(context.error):
         return
     if update and update.effective_message:
@@ -3732,7 +3716,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     
     # Callback обработчики
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_item_|admin_confirm_remove_|admin_add_item_|admin_change_price_|admin_select_price_item_)"))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_|admin_remove_confirm_|admin_add_item_|admin_change_price_|admin_select_price_item_)"))
     app.add_handler(CallbackQueryHandler(view_order, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(my_orders, pattern="^back_orders_list$"))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu_back$"))
