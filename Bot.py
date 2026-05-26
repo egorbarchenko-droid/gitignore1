@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 16.0.0 - FULLY FIXED AND TESTED
+Версия: 16.0.1 - ADMIN REMOVE FIXED
 """
 
 import os
@@ -63,6 +63,10 @@ user_last_command = defaultdict(datetime)
 
 # Глобальное хранилище для выбора запчастей
 user_selections = {}
+
+# Глобальное хранилище для сессий админа при удалении товаров
+# Ключ: order_num, значение: {'parts': list, 'selected': set}
+admin_remove_sessions = {}
 
 # Безопасные колонки для UPDATE
 ALLOWED_ORDER_COLUMNS = {
@@ -2689,7 +2693,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
+    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ (ИСПРАВЛЕНО) ==========
     if data.startswith("admin_remove_items_"):
         order_num = data[18:]
         logger.info(f"[ADMIN_REMOVE] Начало удаления товаров для заказа: {order_num}")
@@ -2714,9 +2718,11 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Нет товаров для удаления")
                 return
             
-            ctx.user_data['admin_remove_order'] = order_num
-            ctx.user_data['admin_remove_parts'] = selected_parts.copy()
-            ctx.user_data['admin_remove_selected'] = set()
+            # ИСПРАВЛЕНИЕ: Используем глобальный словарь вместо ctx.user_data
+            admin_remove_sessions[order_num] = {
+                'parts': selected_parts.copy(),
+                'selected': set()
+            }
             
             kb = []
             for i, part in enumerate(selected_parts):
@@ -2745,9 +2751,12 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
+    # ========== ПЕРЕКЛЮЧЕНИЕ ВЫБОРА ТОВАРА (ИСПРАВЛЕНО) ==========
     if data.startswith("admin_toggle_item_"):
         await query.answer()
-        rest = data[19:]
+        # Формат: admin_toggle_item_RVN-XXXXXX_0
+        # Извлекаем номер заказа и индекс
+        rest = data[19:]  # убираем "admin_toggle_item_"
         last_underscore = rest.rfind('_')
         if last_underscore == -1:
             await query.edit_message_text("❌ Ошибка формата данных")
@@ -2758,18 +2767,18 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"[ADMIN_TOGGLE] order_num: {order_num}, item_idx: {item_idx}")
         
-        if ctx.user_data.get('admin_remove_order') != order_num:
+        # Проверяем наличие сессии
+        if order_num not in admin_remove_sessions:
             await query.edit_message_text("❌ Сессия истекла. Начните заново.")
             return
         
-        selected = ctx.user_data.get('admin_remove_selected', set())
+        selected = admin_remove_sessions[order_num]['selected']
         if item_idx in selected:
             selected.remove(item_idx)
         else:
             selected.add(item_idx)
-        ctx.user_data['admin_remove_selected'] = selected
         
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
+        selected_parts = admin_remove_sessions[order_num]['parts']
         
         kb = []
         for i, part in enumerate(selected_parts):
@@ -2798,16 +2807,17 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
+    # ========== ПОДТВЕРЖДЕНИЕ УДАЛЕНИЯ (ИСПРАВЛЕНО) ==========
     if data.startswith("admin_confirm_remove_"):
         order_num = data[19:]
         logger.info(f"[ADMIN_CONFIRM] Подтверждение удаления для заказа: {order_num}")
         
-        if ctx.user_data.get('admin_remove_order') != order_num:
-            await query.edit_message_text("❌ Сессия истекла")
+        if order_num not in admin_remove_sessions:
+            await query.edit_message_text("❌ Сессия истекла. Начните заново.")
             return
         
-        selected_items = ctx.user_data.get('admin_remove_selected', set())
-        selected_parts = ctx.user_data.get('admin_remove_parts', [])
+        selected_items = admin_remove_sessions[order_num]['selected']
+        selected_parts = admin_remove_sessions[order_num]['parts']
         
         logger.info(f"[ADMIN_CONFIRM] Выбрано для удаления: {selected_items}")
         
@@ -2839,8 +2849,10 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"[ADMIN_CONFIRM] Новая сумма: {new_total}, удалено: {removed_names}")
         
+        # Обновляем заказ в БД
         update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
         
+        # Сохраняем в историю
         conn = sqlite3.connect(DB_PATH)
         try:
             c = conn.cursor()
@@ -2855,15 +2867,22 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         finally:
             conn.close()
         
+        # Уведомляем клиента
         order = get_order(order_num)
         if order:
-            await ctx.bot.send_message(
-                order['user_id'],
-                text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
-                     f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
-                     f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
-                     f"По вопросам обращайтесь к менеджеру."
-            )
+            try:
+                await ctx.bot.send_message(
+                    order['user_id'],
+                    text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
+                         f"🗑️ Удалены товары: {', '.join(removed_names)}\n"
+                         f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+                         f"По вопросам обращайтесь к менеджеру."
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление клиенту: {e}")
+        
+        # Удаляем сессию
+        del admin_remove_sessions[order_num]
         
         await query.edit_message_text(
             f"✅ Товары удалены!\n\n"
@@ -2872,10 +2891,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
             f"Клиент получил уведомление."
         )
-        
-        ctx.user_data.pop('admin_remove_order', None)
-        ctx.user_data.pop('admin_remove_parts', None)
-        ctx.user_data.pop('admin_remove_selected', None)
         return
     
     # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
