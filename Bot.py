@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 14.0.0 - FULLY FIXED WITH ADMIN DELETE BUTTONS
+Версия: 15.0.0 - FULLY FIXED WITH ADMIN DELETE BUTTONS
 """
 
 import os
@@ -2747,6 +2747,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ctx.user_data['admin_remove_parts'] = selected_parts.copy()
             ctx.user_data['admin_remove_selected'] = set()
             
+            # СОЗДАЕМ КНОПКИ ДЛЯ КАЖДОГО ТОВАРА
             kb = []
             for i, part in enumerate(selected_parts):
                 if isinstance(part, dict):
@@ -2837,7 +2838,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         if not selected_items:
             await query.edit_message_text("❌ Не выбрано ни одного товара")
-            return
+        return
         
         if len(selected_items) >= len(selected_parts):
             await query.edit_message_text(
