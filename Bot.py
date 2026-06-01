@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 16.0.4 - COMPLETE FIXED (All features working)
+Версия: 16.0.5 - ALL ERRORS FIXED
 """
 
 import os
@@ -282,6 +282,8 @@ def wrap_text(text: str, max_length: int = 25) -> str:
 
 def get_status_icon(status_text: str) -> str:
     """Получение иконки для статуса"""
+    if not status_text:
+        return '📦'
     for key, icon in STATUS_ICONS.items():
         if key in status_text:
             return icon
@@ -408,7 +410,17 @@ def generate_order_number() -> str:
                 return num
             except sqlite3.IntegrityError:
                 continue
-        raise RuntimeError("Failed to generate unique order number")
+        # Если не удалось сгенерировать уникальный номер, пробуем с timestamp
+        num = f"RVN-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        try:
+            c.execute('INSERT INTO orders (order_number) VALUES (?)', (num,))
+            conn.commit()
+            return num
+        except sqlite3.IntegrityError:
+            num = f"RVN-{int(datetime.now().timestamp())}"
+            c.execute('INSERT INTO orders (order_number) VALUES (?)', (num,))
+            conn.commit()
+            return num
     finally:
         conn.close()
 
@@ -794,6 +806,8 @@ def calc_delivery_price(km: int) -> int:
 
 def extract_city_from_address(address: str) -> str:
     """Определение города из адреса"""
+    if not address:
+        return 'Москва'
     address_lower = address.lower()
     cities = {
         'химки': 'Химки', 'мытищи': 'Мытищи', 'люберцы': 'Люберцы',
@@ -807,6 +821,8 @@ def extract_city_from_address(address: str) -> str:
 
 def extract_distance_from_address(address: str) -> int:
     """Определение расстояния от МКАД"""
+    if not address:
+        return 30
     address_lower = address.lower()
     distances = {
         'химки': 5, 'мытищи': 8, 'люберцы': 10,
@@ -826,6 +842,8 @@ def delivery_discount(order_sum: int) -> int:
 
 def parse_products(text: str) -> List[Dict]:
     """Парсинг запчастей из текста"""
+    if not text:
+        return []
     products = []
     for line in text.strip().split('\n'):
         line = line.strip()
@@ -909,8 +927,11 @@ def update_car_comment(user_id: int, vin: str, comment: str) -> bool:
 def require_manager(func):
     @wraps(func)
     async def wrapper(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not upd or not upd.effective_user:
+            return
         if upd.effective_user.id != MANAGER_ID:
-            await upd.message.reply_text("⛔ Доступ запрещён")
+            if upd.message:
+                await upd.message.reply_text("⛔ Доступ запрещён")
             return
         return await func(upd, ctx, *args, **kwargs)
     return wrapper
@@ -951,8 +972,11 @@ def require_order_owner(func):
 def rate_limit(func):
     @wraps(func)
     async def wrapper(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not upd or not upd.effective_user:
+            return
         if not check_rate_limit(upd.effective_user.id):
-            await upd.message.reply_text("⏳ Слишком часто! Подождите пару секунд.")
+            if upd.message:
+                await upd.message.reply_text("⏳ Слишком часто! Подождите пару секунд.")
             return
         return await func(upd, ctx, *args, **kwargs)
     return wrapper
@@ -961,6 +985,9 @@ def rate_limit(func):
 
 async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
+    if not upd or not upd.effective_user:
+        return
+    
     if ctx.args and ctx.args[0].startswith('ref_'):
         ref_id = int(ctx.args[0][4:])
         if ref_id != upd.effective_user.id:
@@ -994,6 +1021,9 @@ async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def new_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Начало оформления заказа"""
+    if not upd or not upd.effective_user:
+        return ConversationHandler.END
+    
     cars = get_cars(upd.effective_user.id)
     if cars:
         keyboard = [[InlineKeyboardButton("🆕 Ввести VIN вручную", callback_data="order_manual")]]
@@ -1036,6 +1066,9 @@ async def order_auto_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @rate_limit
 async def get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение VIN номера"""
+    if not upd or not upd.message:
+        return OrderStates.VIN
+    
     vin = upd.message.text.upper().strip()
     
     if not validate_vin(vin):
@@ -1049,6 +1082,9 @@ async def get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @rate_limit
 async def get_mileage(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение пробега"""
+    if not upd or not upd.message:
+        return OrderStates.MILEAGE
+    
     try:
         mileage = int(upd.message.text)
         if mileage < 0:
@@ -1063,18 +1099,25 @@ async def get_mileage(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_style_city(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение стиля вождения в городе"""
+    if not upd or not upd.message:
+        return OrderStates.STYLE_CITY
     ctx.user_data['style_city'] = upd.message.text
     await upd.message.reply_text("🛣️ Стиль вождения на трассе:", reply_markup=highway_style_kb)
     return OrderStates.STYLE_HIGHWAY
 
 async def get_style_highway(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение стиля вождения на трассе"""
+    if not upd or not upd.message:
+        return OrderStates.STYLE_HIGHWAY
     ctx.user_data['style_highway'] = upd.message.text
     await upd.message.reply_text("🚚 Способ доставки:", reply_markup=delivery_type_kb)
     return OrderStates.DELIVERY_TYPE
 
 async def get_delivery_type(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение типа доставки"""
+    if not upd or not upd.message:
+        return OrderStates.DELIVERY_TYPE
+    
     choice = upd.message.text
     ctx.user_data['delivery_type'] = choice
     
@@ -1126,6 +1169,9 @@ async def pickup_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @rate_limit
 async def get_address(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение адреса доставки"""
+    if not upd or not upd.message:
+        return OrderStates.ADDRESS
+    
     full_address = upd.message.text.strip()
     if len(full_address) < 5:
         await upd.message.reply_text("❌ Введите полный адрес (минимум 5 символов):")
@@ -1169,6 +1215,9 @@ async def get_address(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @rate_limit
 async def get_phone(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение номера телефона"""
+    if not upd or not upd.message:
+        return OrderStates.PHONE
+    
     phone = upd.message.text.strip()
     if len(phone) < 5:
         await upd.message.reply_text("❌ Пожалуйста, введите корректный номер телефона:")
@@ -1180,6 +1229,9 @@ async def get_phone(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_part_node(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение узла запчасти"""
+    if not upd or not upd.message:
+        return OrderStates.PART_NODE
+    
     ctx.user_data['part_node'] = upd.message.text
     
     if upd.message.text in AXLE_REQUIRED_NODES:
@@ -1197,6 +1249,9 @@ async def get_part_node(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def get_axle(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение оси"""
+    if not upd or not upd.message:
+        return OrderStates.AXLE
+    
     ctx.user_data['axle'] = upd.message.text
     await upd.message.reply_text(
         "🔧 Какие запчасти нужны? (каждая с новой строки)\n\n"
@@ -1209,6 +1264,9 @@ async def get_axle(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @rate_limit
 async def get_parts(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение списка запчастей"""
+    if not upd or not upd.message:
+        return OrderStates.PARTS
+    
     if not upd.message.text.strip():
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Продолжить без запчастей", callback_data="continue_order")],
@@ -1246,6 +1304,9 @@ async def get_parts(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Подтверждение заказа"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     if upd.message.text == "✅ Готово":
         data = ctx.user_data.copy()
         
@@ -1446,6 +1507,9 @@ async def no_save_vin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def bonus_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Команда /bonus - информация о бонусах"""
+    if not upd or not upd.effective_user:
+        return
+    
     uid = upd.effective_user.id
     bonus_data = get_bonus(uid)
     bal = bonus_data['balance']
@@ -1638,6 +1702,10 @@ async def confirm_spend_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     parts = query.data.split('_')
+    if len(parts) < 4:
+        await query.edit_message_text("❌ Ошибка формата данных")
+        return
+    
     order_num = parts[2]
     spend_amount = int(parts[3])
     uid = query.from_user.id
@@ -1791,6 +1859,9 @@ async def spend_bonus_custom_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def my_orders(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Показать заказы пользователя"""
+    if not upd or not upd.effective_user:
+        return
+    
     await upd.effective_chat.send_action(action="typing")
     
     orders = get_user_orders(upd.effective_user.id)
@@ -2243,6 +2314,9 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
 
 async def garage_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Меню гаража"""
+    if not upd or not upd.effective_user:
+        return
+    
     cars = get_cars(upd.effective_user.id)
     
     if not cars:
@@ -2289,6 +2363,9 @@ async def garage_add_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение VIN для гаража"""
+    if not upd or not upd.message:
+        return GarageStates.VIN
+    
     vin = upd.message.text.upper().strip()
     
     if not validate_vin(vin):
@@ -2310,6 +2387,9 @@ async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def garage_get_description(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение описания для гаража"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     description = upd.message.text.strip()
     if description == "-":
         description = ""
@@ -2374,6 +2454,9 @@ async def garage_comment_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def garage_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Получение комментария для автомобиля"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     user_id = upd.effective_user.id
     vin = ctx.user_data.get('comment_vin')
     
@@ -2410,6 +2493,9 @@ async def garage_back_to_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def referral_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Команда /referral - реферальная система"""
+    if not upd or not upd.effective_user:
+        return
+    
     bot_username = (await ctx.bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{upd.effective_user.id}"
     
@@ -2482,6 +2568,9 @@ async def help_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @require_manager
 async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
     """Панель управления менеджера"""
+    if not upd:
+        return
+    
     orders = get_all_orders()
     keyboard = [
         [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
@@ -2506,11 +2595,15 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
             if "Message is not modified" not in str(e):
                 logger.error(f"Admin menu edit error: {e}")
     else:
-        await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        if upd.message:
+            await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @require_manager
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработка админ-панели"""
+    if not upd or not upd.callback_query:
+        return
+    
     query = upd.callback_query
     data = query.data
     logger.info(f"[ADMIN_CALLBACK] Получен callback: {data}")
@@ -2561,6 +2654,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0))
             conn.commit()
             await query.edit_message_text(f"✅ Тестовый заказ {num} создан!")
+        except Exception as e:
+            logger.error(f"Ошибка создания тестового заказа: {e}")
+            await query.edit_message_text(f"❌ Ошибка: {str(e)}")
         finally:
             conn.close()
         await admin_menu(upd, ctx, query.message)
@@ -2725,7 +2821,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ (ИСПРАВЛЕНО) ==========
+    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
     if data.startswith("admin_remove_items_"):
         order_num = data[18:]
         logger.info(f"[ADMIN_REMOVE] Начало удаления товаров для заказа: {order_num}")
@@ -2964,6 +3060,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("admin_select_price_item_"):
         await query.answer()
         parts = data.split('_')
+        if len(parts) < 6:
+            await query.edit_message_text("❌ Ошибка формата данных")
+            return
         order_num = parts[4]
         item_idx = int(parts[5])
         
@@ -3004,6 +3103,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     if data.startswith("set_delivery_"):
         parts = data.split('_')
+        if len(parts) < 4:
+            await query.edit_message_text("❌ Ошибка формата данных")
+            return
         order_num = parts[2]
         new_delivery = parts[3]
         order = get_order(order_num)
@@ -3162,6 +3264,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def admin_add_item_name_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ввод названия товара для добавления"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     order_num = ctx.user_data.get('admin_add_item_order')
     if not order_num:
         await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
@@ -3182,6 +3287,9 @@ async def admin_add_item_name_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE)
 
 async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ввод цены товара и добавление"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     order_num = ctx.user_data.get('admin_add_item_order')
     if not order_num:
         await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
@@ -3258,6 +3366,9 @@ async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE
 
 async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ввод новой цены для товара"""
+    if not upd or not upd.message:
+        return ConversationHandler.END
+    
     order_num = ctx.user_data.get('admin_change_price_order')
     if not order_num:
         await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
@@ -3331,10 +3442,10 @@ async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработка ввода трек-номера менеджера"""
-    if upd.effective_user.id != MANAGER_ID:
+    if not upd or not upd.effective_user or upd.effective_user.id != MANAGER_ID:
         return
     
-    if not upd.message.reply_to_message:
+    if not upd.message or not upd.message.reply_to_message:
         return
     
     tracking = upd.message.text.strip()
@@ -3400,7 +3511,7 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 @require_manager
 async def manager_reply(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ответ менеджера на заказ (подбор запчастей)"""
-    if not upd.message.reply_to_message:
+    if not upd or not upd.message or not upd.message.reply_to_message:
         return
     
     reply_text = upd.message.reply_to_message.text or ""
@@ -3448,8 +3559,13 @@ async def select_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = upd.callback_query
     await query.answer()
     
-    _, order_num, idx = query.data.split('_')
-    idx = int(idx)
+    parts = query.data.split('_')
+    if len(parts) < 3:
+        await query.edit_message_text("❌ Ошибка формата данных")
+        return
+    
+    order_num = parts[1]
+    idx = int(parts[2])
     uid = query.from_user.id
     
     order = get_order(order_num)
@@ -3563,6 +3679,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Глобальный обработчик ошибок"""
     logger.error(f"Exception: {context.error}")
     if "Message is not modified" in str(context.error):
+        return
+    if "Inline keyboard expected" in str(context.error):
         return
     if update and update.effective_message:
         await update.effective_message.reply_text(
