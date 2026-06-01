@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 16.0.9 - FINAL FIXED
+Версия: 17.0.0 - FULL VERSION WITH ORDER DELETION AND STATUS FILTER
 """
 
 import os
@@ -70,6 +70,9 @@ admin_remove_sessions = {}
 # Глобальное хранилище для сессий клиента при удалении товаров
 client_remove_sessions = {}
 
+# Текущий фильтр статусов в админ-панели
+admin_status_filter = 'all'
+
 # Безопасные колонки для UPDATE
 ALLOWED_ORDER_COLUMNS = {
     'phone', 'our_cost', 'tracking_number', 'final_order', 
@@ -102,6 +105,24 @@ STATUS_TEXT_MAP = {
     'paid': '✅ Оплачен',
     'ordered': '📦 Заказан у поставщика',
     'arrived': '📦✅ Товар поступил',
+    'ready': '✅ Готов к выдаче',
+    'shipped': '🚚 Отправлен',
+    'delivered': '🏠 Доставлен',
+    'issued': '📋 Выдан',
+    'cancelled': '❌ Отменён менеджером',
+    'cancelled_by_user': '❌ Отменён пользователем',
+    'refunded': '🔄 Возврат'
+}
+
+# Список статусов для фильтрации в админ-панели
+ADMIN_STATUS_FILTERS = {
+    'all': 'Все заказы',
+    'pending': '🆕 Ожидает подбора',
+    'waiting_selection': '🟡 Ожидает выбора',
+    'waiting_payment': '💰 Ожидает оплаты',
+    'paid': '✅ Оплачен',
+    'ordered': '📦 Заказан',
+    'arrived': '📦✅ Поступил',
     'ready': '✅ Готов к выдаче',
     'shipped': '🚚 Отправлен',
     'delivered': '🏠 Доставлен',
@@ -151,6 +172,9 @@ class AdminAddItemStates:
 
 class AdminChangePriceStates:
     NEW_PRICE = 70
+
+class AdminDeleteOrderStates:
+    CONFIRM = 80
 
 # ========== КЛАВИАТУРЫ ==========
 main_menu = ReplyKeyboardMarkup([
@@ -307,6 +331,13 @@ def get_status_icon(status_text: str) -> str:
         if key in status_text:
             return icon
     return '📦'
+
+def get_status_key_by_text(status_text: str) -> str:
+    """Получение ключа статуса по тексту"""
+    for key, text in STATUS_TEXT_MAP.items():
+        if text == status_text:
+            return key
+    return 'pending'
 
 # ========== БАЗА ДАННЫХ ==========
 
@@ -510,6 +541,42 @@ def update_order(order_number: str, **kwargs) -> bool:
         if conn:
             conn.close()
 
+def delete_order(order_number: str) -> bool:
+    """Удаление заказа из базы данных (только для отмененных)"""
+    order_number = clean_order_number(order_number)
+    if not order_number:
+        return False
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Проверяем, что заказ отменен
+        c.execute('SELECT status FROM orders WHERE order_number = ?', (order_number,))
+        row = c.fetchone()
+        if not row:
+            return False
+        
+        status = row[0]
+        if status not in ['cancelled', 'cancelled_by_user']:
+            logger.warning(f"Cannot delete order {order_number} with status {status}")
+            return False
+        
+        # Удаляем заказ
+        c.execute('DELETE FROM orders WHERE order_number = ?', (order_number,))
+        conn.commit()
+        logger.info(f"Order {order_number} deleted")
+        return True
+    except Exception as e:
+        logger.error(f"Delete order error: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
 def get_order(order_number: str) -> Optional[Dict]:
     """Получение заказа по номеру"""
     order_number = clean_order_number(order_number)
@@ -618,16 +685,36 @@ def get_user_orders(user_id: int) -> List[Tuple]:
         if conn:
             conn.close()
 
-def get_all_orders() -> List[Tuple]:
-    """Получение всех заказов"""
+def get_all_orders_by_status(status_filter: str = 'all') -> List[Tuple]:
+    """Получение всех заказов с фильтром по статусу"""
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('SELECT order_number, user_name, status_text, created_at FROM orders ORDER BY id DESC')
+        
+        if status_filter == 'all':
+            c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders ORDER BY id DESC')
+        else:
+            c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders WHERE status = ? ORDER BY id DESC', (status_filter,))
+        
         return c.fetchall()
     except Exception as e:
         logger.error(f"Get all orders error: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+def get_cancelled_orders() -> List[Tuple]:
+    """Получение отмененных заказов"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders WHERE status IN ("cancelled", "cancelled_by_user") ORDER BY id DESC')
+        return c.fetchall()
+    except Exception as e:
+        logger.error(f"Get cancelled orders error: {e}")
         return []
     finally:
         if conn:
@@ -731,6 +818,47 @@ def use_bonus(user_id: int, order_num: str, amount: int, desc: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Use bonus error: {e}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def refund_bonus(user_id: int, order_num: str, amount: int, desc: str) -> bool:
+    """Возврат бонусов"""
+    if amount <= 0:
+        return False
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('BEGIN IMMEDIATE')
+        
+        c.execute('SELECT balance FROM bonuses WHERE user_id = ?', (user_id,))
+        row = c.fetchone()
+        
+        if not row:
+            conn.rollback()
+            return False
+        
+        if row[0] < amount:
+            conn.rollback()
+            return False
+        
+        c.execute('UPDATE bonuses SET balance = balance - ?, total_earned = total_earned - ? WHERE user_id = ?',
+                  (amount, amount, user_id))
+        
+        c.execute('''INSERT INTO bonus_history (user_id, order_number, amount, type, description, created_at)
+                     VALUES (?,?,?,?,?,?)''',
+                  (user_id, safe_str(order_num), amount, 'refund', safe_str(desc),
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Refund bonus error: {e}")
         if conn:
             conn.rollback()
         return False
@@ -1009,6 +1137,23 @@ def delete_car(user_id: int, vin: str) -> bool:
         return c.rowcount > 0
     except Exception as e:
         logger.error(f"Delete car error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def update_car_comment(user_id: int, vin: str, comment: str) -> bool:
+    """Обновление комментария к автомобилю"""
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute('UPDATE garage SET comment = ? WHERE user_id = ? AND vin = ?', 
+                  (safe_str(comment), user_id, safe_str(vin)))
+        conn.commit()
+        return c.rowcount > 0
+    except Exception as e:
+        logger.error(f"Update car comment error: {e}")
         return False
     finally:
         if conn:
@@ -2045,6 +2190,7 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     status = order.get('status', '')
     can_edit = status == 'waiting_payment'
+    is_cancelled = status in ['cancelled', 'cancelled_by_user']
     
     text = (f"📋 ЗАКАЗ {order_num}\n\n"
             f"🚗 VIN: {order.get('vin', 'не указан')}\n"
@@ -2339,7 +2485,6 @@ async def remove_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     removed_names_str = ", ".join(removed_names)
     
-    # Сохраняем в историю
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -2429,7 +2574,6 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
         await query.answer("❌ Это не ваш заказ!", show_alert=True)
         return
     
-    # Возвращаем бонусы, если были списаны
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -2444,7 +2588,6 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
         if conn:
             conn.close()
     
-    # Сохраняем в историю
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -2645,18 +2788,7 @@ async def garage_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if comment == "-":
         comment = ""
     
-    # Обновляем комментарий
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('UPDATE garage SET comment = ? WHERE user_id = ? AND vin = ?', (comment, user_id, vin))
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Update comment error: {e}")
-    finally:
-        if conn:
-            conn.close()
+    update_car_comment(user_id, vin, comment)
     
     if comment:
         await upd.message.reply_text(f"✅ Комментарий «{comment}» добавлен к автомобилю {vin}!")
@@ -2757,33 +2889,69 @@ async def help_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 @require_manager
 async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
-    """Панель управления менеджера"""
+    """Панель управления менеджера с фильтром по статусам"""
+    global admin_status_filter
+    
     try:
         if not upd:
             return
         
-        orders = get_all_orders()
+        orders = get_all_orders_by_status(admin_status_filter)
         if orders is None:
             orders = []
+        
+        # Кнопки фильтрации статусов
+        filter_keyboard = []
+        row = []
+        for i, (status_key, status_name) in enumerate(ADMIN_STATUS_FILTERS.items()):
+            marker = "✅ " if admin_status_filter == status_key else ""
+            row.append(InlineKeyboardButton(f"{marker}{status_name[:20]}", callback_data=f"admin_filter_{status_key}"))
+            if len(row) == 2:
+                filter_keyboard.append(row)
+                row = []
+        if row:
+            filter_keyboard.append(row)
+        
+        # Кнопка для отмененных заказов (быстрый доступ)
+        cancelled_orders = get_cancelled_orders()
+        cancelled_count = safe_len(cancelled_orders)
         
         keyboard = [
             [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
             [InlineKeyboardButton("➕ Тестовый заказ", callback_data="admin_fix")],
-            [InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")]
+            [InlineKeyboardButton("🗑️ Отмененные заказы", callback_data="admin_cancelled_list")],
+            [InlineKeyboardButton("🔄 Обновить", callback_data="admin_refresh")],
         ]
         
-        for o in orders[:10]:
+        # Добавляем фильтры
+        keyboard.extend(filter_keyboard)
+        
+        # Показываем текущий фильтр
+        current_filter_name = ADMIN_STATUS_FILTERS.get(admin_status_filter, "Все заказы")
+        keyboard.append([InlineKeyboardButton(f"📌 Текущий фильтр: {current_filter_name}", callback_data="admin_noop")])
+        
+        # Список заказов
+        for o in orders[:15]:
             if o and safe_len(o) > 0:
                 order_num = clean_order_number(o[0])
                 if not order_num:
                     continue
                 user_name = safe_str(o[1])[:15] if safe_len(o) > 1 else "Неизвестно"
                 status_text = safe_str(o[2]) if safe_len(o) > 2 else ''
+                status_key = safe_str(o[4]) if safe_len(o) > 4 else ''
                 icon = get_status_icon(status_text)
                 
-                keyboard.append([InlineKeyboardButton(f"{icon} {order_num} | {user_name}", callback_data=f"admin_order_{order_num}")])
+                # Для отмененных заказов добавляем кнопку удаления
+                if status_key in ['cancelled', 'cancelled_by_user']:
+                    keyboard.append([InlineKeyboardButton(f"🗑️ {icon} {order_num} | {user_name}", callback_data=f"admin_delete_order_{order_num}")])
+                else:
+                    keyboard.append([InlineKeyboardButton(f"{icon} {order_num} | {user_name}", callback_data=f"admin_order_{order_num}")])
         
-        text = "👨‍💼 АДМИН ПАНЕЛЬ\n\nВыберите заказ для управления:"
+        text = f"👨‍💼 АДМИН ПАНЕЛЬ\n\n"
+        text += f"📌 Текущий фильтр: {current_filter_name}\n"
+        text += f"📦 Показано заказов: {safe_len(orders)}\n"
+        text += f"🗑️ Отмененных заказов: {cancelled_count}\n\n"
+        text += "Выберите заказ для управления:"
         
         if message:
             try:
@@ -2802,6 +2970,8 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
 @require_manager
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Обработка админ-панели"""
+    global admin_status_filter
+    
     if not upd or not upd.callback_query:
         return
     
@@ -2814,14 +2984,101 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Answer error: {e}")
     
-    # ========== ОСНОВНЫЕ ДЕЙСТВИЯ ==========
+    # ========== ОБРАБОТКА ФИЛЬТРОВ ==========
+    if data.startswith("admin_filter_"):
+        status = data[13:]
+        if status in ADMIN_STATUS_FILTERS:
+            admin_status_filter = status
+            await admin_menu(upd, ctx, query.message)
+        return
+    
+    if data == "admin_noop":
+        return
+    
+    # ========== СПИСОК ОТМЕНЕННЫХ ЗАКАЗОВ ==========
+    if data == "admin_cancelled_list":
+        orders = get_cancelled_orders()
+        
+        if not orders:
+            await query.edit_message_text("📭 Нет отмененных заказов", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]))
+            return
+        
+        text = "🗑️ ОТМЕНЕННЫЕ ЗАКАЗЫ\n\n"
+        kb = []
+        
+        for o in orders:
+            if o and safe_len(o) > 0:
+                order_num = clean_order_number(o[0])
+                if not order_num:
+                    continue
+                user_name = safe_str(o[1])[:20] if safe_len(o) > 1 else "Неизвестно"
+                status_text = safe_str(o[2]) if safe_len(o) > 2 else ''
+                created = safe_str(o[3])[:10] if safe_len(o) > 3 else ''
+                icon = get_status_icon(status_text)
+                
+                text += f"{icon} {order_num}\n👤 {user_name}\n📅 {created}\n\n"
+                kb.append([InlineKeyboardButton(f"🗑️ Удалить {order_num}", callback_data=f"admin_delete_order_{order_num}")])
+        
+        kb.append([InlineKeyboardButton("◀️ Назад в админ-панель", callback_data="admin_back")])
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        return
+    
+    # ========== УДАЛЕНИЕ ОТМЕНЕННОГО ЗАКАЗА ==========
+    if data.startswith("admin_delete_order_"):
+        order_num = data[18:]
+        order_num = clean_order_number(order_num)
+        
+        ctx.user_data['delete_order_num'] = order_num
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ ДА, УДАЛИТЬ НАВСЕГДА", callback_data=f"admin_confirm_delete_{order_num}")],
+            [InlineKeyboardButton("❌ НЕТ, ОТМЕНА", callback_data="admin_back")]
+        ])
+        
+        await query.edit_message_text(
+            f"⚠️ ВНИМАНИЕ! Вы уверены, что хотите НАВСЕГДА удалить заказ {order_num}?\n\n"
+            f"Это действие НЕЛЬЗЯ будет отменить!\n\n"
+            f"Заказ будет полностью удален из базы данных.",
+            reply_markup=kb
+        )
+        return
+    
+    if data.startswith("admin_confirm_delete_"):
+        order_num = data[20:]
+        order_num = clean_order_number(order_num)
+        
+        # Получаем информацию о заказе перед удалением
+        order = get_order(order_num)
+        
+        if delete_order(order_num):
+            # Уведомляем пользователя
+            if order:
+                try:
+                    await ctx.bot.send_message(
+                        order.get('user_id'),
+                        text=f"🗑️ Ваш заказ {order_num} был удалён администратором из системы (как отменённый).\n\n"
+                             f"Если у вас есть вопросы, обратитесь к менеджеру."
+                    )
+                except Exception as e:
+                    logger.error(f"Error notifying user about deletion: {e}")
+            
+            await query.edit_message_text(f"✅ Заказ {order_num} успешно удалён!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]))
+        else:
+            await query.edit_message_text(f"❌ Ошибка при удалении заказа {order_num}. Возможно, заказ не отменён.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]]))
+        
+        if ctx.user_data and 'delete_order_num' in ctx.user_data:
+            del ctx.user_data['delete_order_num']
+        return
+    
+    # ========== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ (статусы, просмотр и т.д.) ==========
     if data == "admin_refresh":
         await admin_menu(upd, ctx, query.message)
         return
     
     if data == "admin_stats":
         try:
-            orders = get_all_orders()
+            orders = get_all_orders_by_status('all')
             total_orders = safe_len(orders)
             total_sum = 0
             status_count = {}
@@ -2878,6 +3135,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     
     if data == "admin_back":
+        admin_status_filter = 'all'
         await admin_menu(upd, ctx, query.message)
         return
     
@@ -2896,6 +3154,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 return
             
             total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+            status_key = order.get('status', '')
+            is_cancelled = status_key in ['cancelled', 'cancelled_by_user']
+            
             text = (f"📋 ЗАКАЗ {order.get('order_number', '')}\n\n"
                     f"👤 {order.get('user_name', '')}\n"
                     f"📞 {order.get('phone', 'не указан')}\n"
@@ -2920,8 +3181,13 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📜 История изменений", callback_data=f"order_changes_{order_num}")],
                 [InlineKeyboardButton("🔍 Детали", callback_data=f"detail_{order_num}")],
                 [InlineKeyboardButton("❌ Отменить", callback_data=f"cancel_{order_num}")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="admin_back")]
             ]
+            
+            # Для отмененных заказов добавляем кнопку удаления
+            if is_cancelled:
+                kb.append([InlineKeyboardButton("🗑️ УДАЛИТЬ ЗАКАЗ НАВСЕГДА", callback_data=f"admin_delete_order_{order_num}")])
+            
+            kb.append([InlineKeyboardButton("◀️ Назад", callback_data="admin_back")])
             
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         except Exception as e:
@@ -3209,7 +3475,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         update_order(order_num, final_order=str(remaining_parts), total_price=new_total)
         
-        # Сохраняем в историю
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
@@ -3588,7 +3853,6 @@ async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE
     
     update_order(order_num, final_order=str(selected_parts), total_price=new_total)
     
-    # Сохраняем в историю
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -3663,7 +3927,6 @@ async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     update_order(order_num, final_order=str(selected_parts), total_price=new_total)
     
-    # Сохраняем в историю
     conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -3726,17 +3989,14 @@ async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     order_num = None
     
-    # Проверяем сохраненный заказ
     if ctx.user_data:
         order_num = ctx.user_data.get('track_for')
     
-    # Если нет, ищем в тексте сообщения
     if not order_num and upd.message.reply_to_message:
         match = re.search(r'заказа (RVN-[A-Z0-9]{6})', upd.message.reply_to_message.text or '')
         if match:
             order_num = match.group(1)
     
-    # Если все еще нет, ищем в истории
     if not order_num:
         try:
             async for msg in upd.message.chat.iter_history(limit=20):
@@ -3950,7 +4210,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     error_str = str(context.error)
     logger.error(f"Exception: {error_str}")
     
-    # Игнорируем известные не критичные ошибки
     ignore_patterns = [
         "Message is not modified",
         "Inline keyboard expected",
@@ -3995,10 +4254,8 @@ def main():
     except Exception as e:
         logger.error(f"Scheduler error: {e}")
     
-    # Создаем приложение
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Команды бота
     commands = [
         ("start", "Главное меню"),
         ("my_orders", "Мои заказы"),
@@ -4020,7 +4277,6 @@ def main():
     
     # ========== CONVERSATION HANDLERS ==========
     
-    # Order ConversationHandler
     order_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^(🛒 Новый заказ)$"), new_order)],
         states={
@@ -4052,14 +4308,12 @@ def main():
         conversation_timeout=3600
     )
     
-    # Remove Items ConversationHandler
     remove_items_conv = ConversationHandler(
         entry_points=[],
         states={RemoveStates.COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_comment_input)]},
         fallbacks=[CommandHandler("cancel", start)],
     )
     
-    # Admin Add Item ConversationHandler
     admin_add_item_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_add_item_")],
         states={
@@ -4069,14 +4323,12 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
-    # Admin Change Price ConversationHandler
     admin_change_price_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_change_price_")],
         states={AdminChangePriceStates.NEW_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_change_price_input)]},
         fallbacks=[CommandHandler("cancel", start)],
     )
     
-    # Garage ConversationHandler
     garage_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(garage_add_start, pattern="^garage_add$")],
         states={
@@ -4087,7 +4339,6 @@ def main():
         conversation_timeout=300
     )
     
-    # Garage Comment ConversationHandler
     garage_comment_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(garage_comment_start, pattern="^garage_comment_")],
         states={GarageStates.DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, garage_comment_input)]},
@@ -4095,7 +4346,6 @@ def main():
         conversation_timeout=300
     )
     
-    # Save VIN ConversationHandler
     save_vin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(save_vin_callback, pattern="^save_vin_")],
         states={SaveStates.COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_vin_comment_input)]},
@@ -4103,7 +4353,6 @@ def main():
         conversation_timeout=300
     )
     
-    # Spend Bonus ConversationHandler
     spend_bonus_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(spend_bonus_custom_callback, pattern="^spend_bonus_custom_")],
         states={BonusStates.SPEND: [MessageHandler(filters.TEXT & ~filters.COMMAND, spend_bonus_custom_input)]},
@@ -4113,7 +4362,6 @@ def main():
     
     # ========== РЕГИСТРАЦИЯ ОБРАБОТЧИКОВ ==========
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("my_orders", my_orders))
     app.add_handler(CommandHandler("bonus", bonus_cmd))
@@ -4122,7 +4370,6 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", admin_menu))
     
-    # Conversation handlers
     app.add_handler(order_conv)
     app.add_handler(garage_conv)
     app.add_handler(garage_comment_conv)
@@ -4132,7 +4379,6 @@ def main():
     app.add_handler(admin_add_item_conv)
     app.add_handler(admin_change_price_conv)
     
-    # Кнопочные обработчики
     app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
     app.add_handler(MessageHandler(filters.Regex("^(📦 Мои заказы)$"), my_orders))
     app.add_handler(MessageHandler(filters.Regex("^(🎁 Бонусы)$"), bonus_cmd))
@@ -4141,7 +4387,6 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     app.add_handler(MessageHandler(filters.Regex("^(🛒 Новый заказ)$"), new_order))
     
-    # Callback обработчики
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_|admin_remove_confirm_|admin_add_item_|admin_change_price_|admin_select_price_item_)"))
     app.add_handler(CallbackQueryHandler(view_order, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(my_orders, pattern="^back_orders_list$"))
@@ -4159,16 +4404,12 @@ def main():
     app.add_handler(CallbackQueryHandler(select_cb, pattern="^sel_"))
     app.add_handler(CallbackQueryHandler(finalize_cb, pattern="^fin_"))
     
-    # Ответы менеджера
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), track_input))
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_reply))
     
-    # Error handler
     app.add_error_handler(error_handler)
     
     logger.info(f"🤖 Бот запущен! Админ ID: {MANAGER_ID}")
-    
-    # Запуск бота
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
