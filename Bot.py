@@ -1880,6 +1880,7 @@ async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         else:
+            # Исправлено: убираем reply_markup, так как confirm_order_kb не подходит
             await query.edit_message_text("✅ Продолжаем оформление заказа. Введите запчасти:")
             return OrderStates.PARTS
     except Exception as e:
