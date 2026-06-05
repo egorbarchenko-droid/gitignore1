@@ -3,8 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 17.0.9 - FULLY DEBUGGED AND TESTED
-Все функции проверены и исправлены
+Версия: 18.0.0 - С ДОКУМЕНТАМИ ОПЛАТЫ
 """
 
 import os
@@ -174,6 +173,9 @@ class AdminAddItemStates:
 class AdminChangePriceStates:
     NEW_PRICE = 70
 
+class PaymentStates:
+    WAITING_DOCUMENT = 90
+
 # ========== КЛАВИАТУРЫ ==========
 main_menu = ReplyKeyboardMarkup([
     ["🛒 Новый заказ", "🚗 Мой гараж"],
@@ -267,11 +269,9 @@ def clean_order_number(order_num: str) -> str:
     if not order_num:
         return ""
     order_num = safe_str(order_num)
-    # Ищем формат RVN-XXXXXX
     match = re.search(r'RVN-[A-Z0-9]{6}', order_num)
     if match:
         return match.group(0)
-    # Пробуем очистить
     cleaned = re.sub(r'[^A-Za-z0-9-]', '', order_num)
     if re.match(r'^RVN-[A-Z0-9]{6}$', cleaned):
         return cleaned
@@ -390,7 +390,6 @@ def parse_products(text: str) -> List[Dict]:
         if not line:
             continue
         
-        # Ищем цену в строке
         match = re.search(r'(\d{1,3}(?:[\s\.]?\d{3})*)\s*(?:руб|₽|р\.|рублей)', line, re.I)
         if not match:
             continue
@@ -403,7 +402,6 @@ def parse_products(text: str) -> List[Dict]:
         except (ValueError, OverflowError):
             continue
         
-        # Извлекаем название
         name = line[:match.start()].strip()
         name = re.sub(r'^[=\-•–—]+|[=\-•–—]+$', '', name).strip()
         name = re.sub(r'арт\.?\s*\S+', '', name).strip()
@@ -484,6 +482,18 @@ def init_db():
             created_at TEXT
         )''')
         
+        # Таблица документов оплаты
+        c.execute('''CREATE TABLE IF NOT EXISTS payment_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_number TEXT,
+            file_id TEXT,
+            file_type TEXT,
+            caption TEXT,
+            user_id INTEGER,
+            created_at TEXT,
+            verified INTEGER DEFAULT 0
+        )''')
+        
         # Добавление недостающих колонок
         for col in ['phone', 'our_cost', 'tracking_number', 'final_order', 'comment', 'selected_products', 'style_city', 'style_highway']:
             try:
@@ -507,7 +517,8 @@ def init_db():
             'CREATE INDEX IF NOT EXISTS idx_garage_user_id ON garage(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number)',
             'CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_order_changes_order_number ON order_changes(order_number)'
+            'CREATE INDEX IF NOT EXISTS idx_order_changes_order_number ON order_changes(order_number)',
+            'CREATE INDEX IF NOT EXISTS idx_payment_documents_order_number ON payment_documents(order_number)'
         ]
         
         for idx in indexes:
@@ -532,7 +543,6 @@ def backup_db():
             backup_path = os.path.join(BACKUP_DIR, backup_name)
             shutil.copy2(DB_PATH, backup_path)
             
-            # Удаляем старые бэкапы (старше 7 дней)
             for f in os.listdir(BACKUP_DIR):
                 f_path = os.path.join(BACKUP_DIR, f)
                 if os.path.isfile(f_path):
@@ -561,7 +571,6 @@ def generate_unique_order_number() -> str:
                 logger.info(f"Сгенерирован номер заказа: {order_num}")
                 return order_num
         
-        # Fallback с использованием timestamp
         order_num = f"RVN-{int(time.time() * 1000) % 1000000:06d}"
         logger.info(f"Сгенерирован резервный номер: {order_num}")
         return order_num
@@ -587,7 +596,6 @@ def update_order(order_number: str, **kwargs) -> bool:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         c = conn.cursor()
         
-        # Проверка перехода статуса
         if 'status' in safe_kwargs:
             c.execute('SELECT status FROM orders WHERE order_number = ?', (order_number,))
             row = c.fetchone()
@@ -599,11 +607,9 @@ def update_order(order_number: str, **kwargs) -> bool:
                     logger.warning(f"Недопустимый переход статуса: {current_status} -> {new_status}")
                     return False
         
-        # Обновление полей
         for key, val in safe_kwargs.items():
             c.execute(f"UPDATE orders SET {key} = ? WHERE order_number = ?", (val, order_number))
         
-        # Обновление текста статуса
         if 'status' in safe_kwargs and 'status_text' not in safe_kwargs:
             new_status_text = STATUS_TEXT_MAP.get(safe_kwargs['status'], 'Неизвестно')
             c.execute("UPDATE orders SET status_text = ? WHERE order_number = ?", 
@@ -680,7 +686,6 @@ def get_order(order_number: str) -> Optional[Dict]:
             else:
                 order[col] = None
         
-        # Преобразование числовых полей
         for num_field in ['distance', 'delivery_price', 'total_price', 'our_cost', 'user_id']:
             order[num_field] = safe_int(order.get(num_field))
         
@@ -896,6 +901,56 @@ def get_order_changes(order_number: str, limit: int = 20) -> List[Tuple]:
                 conn.close()
             except:
                 pass
+
+# ========== ДОКУМЕНТЫ ОПЛАТЫ ==========
+
+def save_payment_document(order_number: str, file_id: str, file_type: str, caption: str, user_id: int) -> bool:
+    """Сохранение документа оплаты в БД"""
+    order_number = clean_order_number(order_number)
+    if not order_number:
+        return False
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        c = conn.cursor()
+        
+        c.execute('''INSERT INTO payment_documents (order_number, file_id, file_type, caption, user_id, created_at)
+                     VALUES (?,?,?,?,?,?)''',
+                  (order_number, file_id, file_type, caption[:500], user_id,
+                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        
+        conn.commit()
+        logger.info(f"Документ оплаты сохранён для заказа {order_number}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения документа оплаты: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def get_payment_documents(order_number: str) -> List[Tuple]:
+    """Получение документов оплаты для заказа"""
+    order_number = clean_order_number(order_number)
+    if not order_number:
+        return []
+    
+    conn = None
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        c = conn.cursor()
+        c.execute('''SELECT file_id, file_type, caption, created_at, verified 
+                     FROM payment_documents 
+                     WHERE order_number = ? 
+                     ORDER BY created_at DESC''', (order_number,))
+        return c.fetchall()
+    except Exception as e:
+        logger.error(f"Ошибка получения документов оплаты: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 # ========== ГАРАЖ ==========
 
@@ -1733,8 +1788,7 @@ async def get_parts(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return OrderStates.PARTS
         
-        ctx.user_data['needed_parts'] = upd.message.text
-        
+        ctx.user_data['needed_parts'] = upd.message.text        
         data = ctx.user_data if ctx.user_data else {}
         delivery_price = safe_int(data.get('delivery_price', 500))
         
@@ -2128,6 +2182,8 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             eligible_sum = calculate_bonus_eligible_sum(order)
             if bonus_data['balance'] > 0 and eligible_sum > 0:
                 kb.append([InlineKeyboardButton("🎁 Списать бонусы", callback_data=f"apply_bonus_{order_num}")])
+            # Кнопка для отправки документа оплаты
+            kb.append([InlineKeyboardButton("💳 Отправить чек об оплате", callback_data=f"pay_document_{order_num}")])
         
         kb.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")])
         
@@ -2152,6 +2208,235 @@ async def main_menu_back(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await start(upd, ctx)
     except Exception as e:
         logger.error(f"Ошибка в main_menu_back: {e}")
+
+# ========== ОПЛАТА - ОТПРАВКА ДОКУМЕНТА ==========
+
+@require_order_owner
+async def payment_document_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Колбэк для отправки документа оплаты"""
+    try:
+        query = upd.callback_query
+        await query.answer()
+        
+        parts = query.data.split('_')
+        if len(parts) < 3:
+            await query.edit_message_text("❌ Ошибка формата данных")
+            return
+        
+        order_num = parts[2]
+        order = get_order(order_num)
+        
+        if not order:
+            await query.edit_message_text("❌ Заказ не найден")
+            return
+        
+        if order.get('status') != 'waiting_payment':
+            await query.edit_message_text("❌ Оплату можно отправить только для заказа в статусе 'Ожидает оплаты'")
+            return
+        
+        total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+        
+        await query.edit_message_text(
+            f"💳 ОПЛАТА ЗАКАЗА #{order_num}\n\n"
+            f"💰 Сумма к оплате: {total_sum} руб.\n\n"
+            f"📎 Отправьте документ об оплате (чек, квитанцию, счёт):\n\n"
+            f"• Можно отправить ФОТО или PDF-файл\n"
+            f"• Добавьте комментарий (необязательно)\n\n"
+            f"📌 После отправки менеджер проверит оплату и изменит статус заказа.\n\n"
+            f"❌ Для отмены отправьте /cancel"
+        )
+        
+        ctx.user_data['payment_order'] = order_num
+        return PaymentStates.WAITING_DOCUMENT
+    except Exception as e:
+        logger.error(f"Ошибка в payment_document_callback: {e}")
+        return ConversationHandler.END
+
+async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработка полученного документа оплаты"""
+    try:
+        if not upd or not upd.message:
+            return ConversationHandler.END
+        
+        user_id = upd.effective_user.id
+        order_num = ctx.user_data.get('payment_order') if ctx.user_data else None
+        
+        if not order_num:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова или начните заново.")
+            return ConversationHandler.END
+        
+        order = get_order(order_num)
+        if not order:
+            await upd.message.reply_text("❌ Заказ не найден")
+            return ConversationHandler.END
+        
+        if order.get('status') != 'waiting_payment':
+            await upd.message.reply_text("❌ Оплату можно отправить только для заказа в статусе 'Ожидает оплаты'")
+            return ConversationHandler.END
+        
+        caption = ""
+        file_id = None
+        file_type = "unknown"
+        
+        if upd.message.photo:
+            file_id = upd.message.photo[-1].file_id
+            file_type = "photo"
+            caption = upd.message.caption or ""
+        elif upd.message.document:
+            file_id = upd.message.document.file_id
+            file_type = "document"
+            caption = upd.message.caption or ""
+        else:
+            await upd.message.reply_text(
+                "❌ Пожалуйста, отправьте ФОТО или ДОКУМЕНТ (PDF, JPG, PNG)\n\n"
+                "Вы можете:\n"
+                "📸 Сфотографировать чек\n"
+                "📎 Прикрепить файл (PDF)\n"
+                "🖼️ Отправить скриншот\n\n"
+                "Или отправьте /cancel для отмены"
+            )
+            return PaymentStates.WAITING_DOCUMENT
+        
+        total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
+        
+        # Сохраняем документ в БД
+        save_payment_document(order_num, file_id, file_type, caption, user_id)
+        
+        # Отправляем документ менеджеру
+        try:
+            manager_text = (
+                f"💳 НОВЫЙ ДОКУМЕНТ ОПЛАТЫ\n\n"
+                f"📦 Заказ: {order_num}\n"
+                f"👤 Клиент: {order.get('user_name', 'Неизвестно')}\n"
+                f"📞 Телефон: {order.get('phone', 'Не указан')}\n"
+                f"💰 Сумма: {total_sum} руб.\n"
+                f"📎 Тип: {'Фото' if file_type == 'photo' else 'Документ'}\n"
+                f"💬 Комментарий: {caption[:200] if caption else 'Нет'}\n\n"
+                f"✅ Для подтверждения оплаты нажмите:\n"
+                f"/confirm_payment {order_num}"
+            )
+            
+            if file_type == "photo":
+                await ctx.bot.send_photo(MANAGER_ID, file_id, caption=manager_text)
+            else:
+                await ctx.bot.send_document(MANAGER_ID, file_id, caption=manager_text)
+        except Exception as e:
+            logger.error(f"Ошибка отправки менеджеру: {e}")
+            await upd.message.reply_text("⚠️ Ошибка при отправке документа менеджеру. Попробуйте позже.")
+            return ConversationHandler.END
+        
+        await upd.message.reply_text(
+            f"✅ Документ об оплате для заказа {order_num} успешно отправлен!\n\n"
+            f"💰 Сумма: {total_sum} руб.\n"
+            f"📎 Файл: {'Фото' if file_type == 'photo' else 'Документ'}\n\n"
+            f"⏳ Менеджер проверит оплату и изменит статус заказа.\n"
+            f"Вы получите уведомление, когда заказ будет подтверждён.\n\n"
+            f"Вернуться в главное меню: /start"
+        )
+        
+        if ctx.user_data and 'payment_order' in ctx.user_data:
+            del ctx.user_data['payment_order']
+        
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в handle_payment_document: {e}")
+        await upd.message.reply_text(f"❌ Произошла ошибка: {str(e)[:100]}")
+        return ConversationHandler.END
+
+# ========== КОМАНДЫ ДЛЯ МЕНЕДЖЕРА ==========
+
+@require_manager
+async def confirm_payment_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Команда /confirm_payment RVN-XXXXXX - подтверждение оплаты менеджером"""
+    try:
+        if not upd or not upd.message:
+            return
+        
+        args = ctx.args
+        if not args or len(args) == 0:
+            await upd.message.reply_text(
+                "❌ Укажите номер заказа\n\n"
+                "Пример: /confirm_payment RVN-ABCD12\n\n"
+                "Заказ будет переведён в статус 'Оплачен'"
+            )
+            return
+        
+        order_num = clean_order_number(args[0])
+        if not order_num:
+            await upd.message.reply_text("❌ Неверный формат номера заказа")
+            return
+        
+        order = get_order(order_num)
+        if not order:
+            await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+            return
+        
+        if order.get('status') != 'waiting_payment':
+            await upd.message.reply_text(f"❌ Заказ {order_num} не в статусе 'Ожидает оплаты'")
+            return
+        
+        # Меняем статус заказа
+        if update_order(order_num, status='paid'):
+            # Уведомляем клиента
+            try:
+                await ctx.bot.send_message(
+                    order.get('user_id'),
+                    text=f"✅ Заказ {order_num} ОПЛАЧЕН!\n\n"
+                         f"💰 Сумма: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб.\n\n"
+                         f"📦 Статус заказа: {STATUS_TEXT_MAP.get('paid')}\n"
+                         f"Спасибо за покупку! Менеджер свяжется с вами."
+                )
+            except Exception as e:
+                logger.error(f"Ошибка уведомления клиента: {e}")
+            
+            await upd.message.reply_text(
+                f"✅ Заказ {order_num} подтверждён как ОПЛАЧЕННЫЙ!\n\n"
+                f"👤 Клиент получил уведомление.\n"
+                f"💰 Сумма: {order.get('total_price', 0) + order.get('delivery_price', 0)} руб."
+            )
+        else:
+            await upd.message.reply_text(f"❌ Ошибка при обновлении статуса заказа {order_num}")
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_payment_command: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+@require_manager
+async def show_payment_docs(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Команда /payment_docs RVN-XXXXXX - показать документы оплаты заказа"""
+    try:
+        if not upd or not upd.message:
+            return
+        
+        args = ctx.args
+        if not args or len(args) == 0:
+            await upd.message.reply_text("Пример: /payment_docs RVN-ABCD12")
+            return
+        
+        order_num = clean_order_number(args[0])
+        if not order_num:
+            await upd.message.reply_text("❌ Неверный формат номера заказа")
+            return
+        
+        docs = get_payment_documents(order_num)
+        
+        if not docs:
+            await upd.message.reply_text(f"📭 Нет документов об оплате для заказа {order_num}")
+            return
+        
+        await upd.message.reply_text(f"📎 Документы оплаты для заказа {order_num}:\n\nВсего документов: {len(docs)}")
+        
+        for doc in docs:
+            file_id, file_type, caption, created, verified = doc
+            status = "✅ Проверен" if verified else "⏳ Ожидает проверки"
+            text = f"📅 {created[:16]}\n📎 Тип: {file_type}\n📌 Статус: {status}\n💬 {caption[:100] if caption else ''}"
+            
+            if file_type == "photo":
+                await upd.message.reply_photo(file_id, caption=text)
+            else:
+                await upd.message.reply_document(file_id, caption=text)
+    except Exception as e:
+        logger.error(f"Ошибка в show_payment_docs: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 # ========== КЛИЕНТ УДАЛЯЕТ ТОВАРЫ ==========
 
@@ -3394,7 +3679,6 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
         if orders is None:
             orders = []
         
-        # Кнопки фильтрации статусов
         filter_keyboard = []
         row = []
         for i, (status_key, status_name) in enumerate(ADMIN_STATUS_FILTERS.items()):
@@ -4803,6 +5087,8 @@ def main():
         ("fix_orders", "Проверить заказы"),
         ("delorder", "Удалить заказ по номеру"),
         ("batch_del", "Массовое удаление заказов"),
+        ("confirm_payment", "Подтвердить оплату заказа"),
+        ("payment_docs", "Показать документы оплаты"),
     ]
     
     async def set_commands(application):
@@ -4905,6 +5191,16 @@ def main():
         fallbacks=[CommandHandler("cancel", start)],
     )
     
+    # ConversationHandler для отправки документов оплаты
+    payment_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(payment_document_callback, pattern="^pay_document_"),
+        ],
+        states={PaymentStates.WAITING_DOCUMENT: [MessageHandler(filters.PHOTO | filters.Document.ALL, handle_payment_document)]},
+        fallbacks=[CommandHandler("cancel", start)],
+        conversation_timeout=600
+    )
+    
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(order_conv)
@@ -4915,6 +5211,7 @@ def main():
     app.add_handler(spend_bonus_conv)
     app.add_handler(admin_add_item_conv)
     app.add_handler(admin_change_price_conv)
+    app.add_handler(payment_conv)
     
     app.add_handler(CommandHandler("my_orders", my_orders))
     app.add_handler(CommandHandler("bonus", bonus_cmd))
@@ -4928,6 +5225,8 @@ def main():
     app.add_handler(CommandHandler("batch_del", batch_delete_orders))
     app.add_handler(CommandHandler("allorders", show_all_orders_raw))
     app.add_handler(CommandHandler("fix_orders", fix_orphan_orders))
+    app.add_handler(CommandHandler("confirm_payment", confirm_payment_command))
+    app.add_handler(CommandHandler("payment_docs", show_payment_docs))
     
     # Кнопочные обработчики
     app.add_handler(MessageHandler(filters.Regex("^(🚗 Мой гараж)$"), garage_menu))
