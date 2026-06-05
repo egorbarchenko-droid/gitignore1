@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 18.0.1 - FULLY FIXED (Status transitions fixed)
+Версия: 18.0.2 - FULLY FIXED (Syntax error fixed)
 """
 
 import os
@@ -82,7 +82,7 @@ ALLOWED_ORDER_COLUMNS = {
     'style_city', 'style_highway'
 }
 
-# Статусы заказов (ПРАВИЛЬНЫЕ ПЕРЕХОДЫ)
+# Статусы заказов
 STATUS_TRANSITIONS = {
     'pending': ['waiting_selection', 'cancelled'],
     'waiting_selection': ['waiting_payment', 'cancelled'],
@@ -1924,7 +1924,7 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение редактирования заказа (ИСПРАВЛЕНО)"""
+    """Подтверждение редактирования заказа"""
     try:
         query = upd.callback_query
         await query.answer()
@@ -1938,7 +1938,6 @@ async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         else:
-            # Исправлено: просто текст без клавиатуры
             await query.edit_message_text("✅ Продолжаем оформление заказа. Введите запчасти:")
             return OrderStates.PARTS
     except Exception as e:
@@ -2186,7 +2185,6 @@ async def view_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             eligible_sum = calculate_bonus_eligible_sum(order)
             if bonus_data['balance'] > 0 and eligible_sum > 0:
                 kb.append([InlineKeyboardButton("🎁 Списать бонусы", callback_data=f"apply_bonus_{order_num}")])
-            # Кнопка для отправки документа оплаты
             kb.append([InlineKeyboardButton("💳 Отправить чек об оплате", callback_data=f"pay_document_{order_num}")])
         
         kb.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="back_orders_list")])
@@ -3752,7 +3750,7 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
 
 @require_manager
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Обработка админ-панели (ИСПРАВЛЕНО)"""
+    """Обработка админ-панели"""
     global admin_status_filter
     
     if not upd or not upd.callback_query:
@@ -3980,7 +3978,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 try:
                     conn.close()
                 except:
-                    pass        await admin_menu(upd, ctx, query.message)
+                    pass
+        await admin_menu(upd, ctx, query.message)
         return
     
     if data == "admin_back":
