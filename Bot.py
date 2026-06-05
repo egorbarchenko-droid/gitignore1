@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 18.0.0 - С ДОКУМЕНТАМИ ОПЛАТЫ
+Версия: 18.0.1 - FULLY FIXED (Status transitions fixed)
 """
 
 import os
@@ -82,7 +82,7 @@ ALLOWED_ORDER_COLUMNS = {
     'style_city', 'style_highway'
 }
 
-# Статусы заказов
+# Статусы заказов (ПРАВИЛЬНЫЕ ПЕРЕХОДЫ)
 STATUS_TRANSITIONS = {
     'pending': ['waiting_selection', 'cancelled'],
     'waiting_selection': ['waiting_payment', 'cancelled'],
@@ -582,7 +582,7 @@ def generate_unique_order_number() -> str:
             conn.close()
 
 def update_order(order_number: str, **kwargs) -> bool:
-    """Обновление заказа"""
+    """Обновление заказа с проверкой перехода статуса"""
     order_number = clean_order_number(order_number)
     if not order_number:
         return False
@@ -596,6 +596,7 @@ def update_order(order_number: str, **kwargs) -> bool:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         c = conn.cursor()
         
+        # Проверка перехода статуса
         if 'status' in safe_kwargs:
             c.execute('SELECT status FROM orders WHERE order_number = ?', (order_number,))
             row = c.fetchone()
@@ -950,7 +951,10 @@ def get_payment_documents(order_number: str) -> List[Tuple]:
         return []
     finally:
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except:
+                pass
 
 # ========== ГАРАЖ ==========
 
@@ -1920,7 +1924,7 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение редактирования заказа"""
+    """Подтверждение редактирования заказа (ИСПРАВЛЕНО)"""
     try:
         query = upd.callback_query
         await query.answer()
@@ -1934,7 +1938,7 @@ async def confirm_edit_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         else:
-            # Исправлено: убираем reply_markup, так как confirm_order_kb не подходит
+            # Исправлено: просто текст без клавиатуры
             await query.edit_message_text("✅ Продолжаем оформление заказа. Введите запчасти:")
             return OrderStates.PARTS
     except Exception as e:
@@ -3748,7 +3752,7 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
 
 @require_manager
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Обработка админ-панели"""
+    """Обработка админ-панели (ИСПРАВЛЕНО)"""
     global admin_status_filter
     
     if not upd or not upd.callback_query:
@@ -3976,8 +3980,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 try:
                     conn.close()
                 except:
-                    pass
-        await admin_menu(upd, ctx, query.message)
+                    pass        await admin_menu(upd, ctx, query.message)
         return
     
     if data == "admin_back":
@@ -4002,6 +4005,9 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status_key = order.get('status', '')
             is_cancelled = status_key in ['cancelled', 'cancelled_by_user']
             
+            # Получаем доступные переходы для текущего статуса
+            allowed_transitions = STATUS_TRANSITIONS.get(status_key, [])
+            
             text = (f"📋 ЗАКАЗ {order.get('order_number', '')}\n\n"
                     f"👤 {order.get('user_name', '')}\n"
                     f"📞 {order.get('phone', 'не указан')}\n"
@@ -4013,21 +4019,47 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     f"💰 Сумма: {total_sum} руб.\n"
                     f"📦 Статус: {order.get('status_text', 'неизвестен')}")
             
-            kb = [
-                [InlineKeyboardButton("💰 Оплачен", callback_data=f"pay_{order_num}")],
-                [InlineKeyboardButton("📦 Заказан", callback_data=f"ordered_{order_num}")],
-                [InlineKeyboardButton("📦✅ Товар поступил", callback_data=f"arrived_{order_num}")],
-                [InlineKeyboardButton("✅ Готов к выдаче", callback_data=f"ready_{order_num}")],
-                [InlineKeyboardButton("🚚 Отправлен", callback_data=f"ship_{order_num}")],
-                [InlineKeyboardButton("🏠 Доставлен", callback_data=f"del_{order_num}")],
-                [InlineKeyboardButton("📋 Выдан", callback_data=f"issued_{order_num}")],
-                [InlineKeyboardButton("✏️ Изменить доставку", callback_data=f"edit_delivery_{order_num}")],
-                [InlineKeyboardButton("✏️ Редактировать товары", callback_data=f"admin_edit_items_{order_num}")],
-                [InlineKeyboardButton("📜 История изменений", callback_data=f"order_changes_{order_num}")],
-                [InlineKeyboardButton("🔍 Детали", callback_data=f"detail_{order_num}")],
-                [InlineKeyboardButton("❌ Отменить", callback_data=f"cancel_{order_num}")],
-            ]
+            kb = []
             
+            # Кнопки в зависимости от доступных переходов
+            if 'waiting_selection' in allowed_transitions:
+                kb.append([InlineKeyboardButton("🟡 Перевести в 'Ожидает выбора'", callback_data=f"waiting_selection_{order_num}")])
+            
+            if 'waiting_payment' in allowed_transitions:
+                kb.append([InlineKeyboardButton("💰 Перевести в 'Ожидает оплаты'", callback_data=f"waiting_payment_{order_num}")])
+            
+            if 'paid' in allowed_transitions:
+                kb.append([InlineKeyboardButton("✅ Оплачен", callback_data=f"pay_{order_num}")])
+            
+            if 'ordered' in allowed_transitions:
+                kb.append([InlineKeyboardButton("📦 Заказан", callback_data=f"ordered_{order_num}")])
+            
+            if 'arrived' in allowed_transitions:
+                kb.append([InlineKeyboardButton("📦✅ Товар поступил", callback_data=f"arrived_{order_num}")])
+            
+            if 'ready' in allowed_transitions:
+                kb.append([InlineKeyboardButton("✅ Готов к выдаче", callback_data=f"ready_{order_num}")])
+            
+            if 'shipped' in allowed_transitions:
+                kb.append([InlineKeyboardButton("🚚 Отправлен", callback_data=f"ship_{order_num}")])
+            
+            if 'delivered' in allowed_transitions:
+                kb.append([InlineKeyboardButton("🏠 Доставлен", callback_data=f"del_{order_num}")])
+            
+            if 'issued' in allowed_transitions:
+                kb.append([InlineKeyboardButton("📋 Выдан", callback_data=f"issued_{order_num}")])
+            
+            # Кнопка отмены (доступна почти всегда, кроме уже отменённых)
+            if 'cancelled' in allowed_transitions and not is_cancelled:
+                kb.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{order_num}")])
+            
+            # Дополнительные кнопки (всегда доступны)
+            kb.append([InlineKeyboardButton("✏️ Изменить доставку", callback_data=f"edit_delivery_{order_num}")])
+            kb.append([InlineKeyboardButton("✏️ Редактировать товары", callback_data=f"admin_edit_items_{order_num}")])
+            kb.append([InlineKeyboardButton("📜 История изменений", callback_data=f"order_changes_{order_num}")])
+            kb.append([InlineKeyboardButton("🔍 Детали", callback_data=f"detail_{order_num}")])
+            
+            # Кнопка удаления для отменённых заказов
             if is_cancelled:
                 kb.append([InlineKeyboardButton("🗑️ УДАЛИТЬ ЗАКАЗ НАВСЕГДА", callback_data=f"admin_delete_order_{order_num}")])
             
@@ -4037,6 +4069,25 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка просмотра заказа: {e}")
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
+        return
+    
+    # ========== НОВЫЕ ОБРАБОТЧИКИ СТАТУСОВ ==========
+    if data.startswith("waiting_selection_"):
+        order_num = data[18:]
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='waiting_selection'):
+            await query.edit_message_text("✅ СТАТУС: ОЖИДАЕТ ВЫБОРА ЗАПЧАСТЕЙ")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
+        return
+    
+    if data.startswith("waiting_payment_"):
+        order_num = data[17:]
+        order_num = clean_order_number(order_num)
+        if update_order(order_num, status='waiting_payment'):
+            await query.edit_message_text("✅ СТАТУС: ОЖИДАЕТ ОПЛАТЫ")
+        else:
+            await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
     # ========== ИСТОРИЯ ИЗМЕНЕНИЙ ==========
@@ -4455,7 +4506,7 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"✅ Доставка изменена!\n\n{desc}")
         return
     
-    # ========== ОТПРАВЛЕН (SHIP) ==========
+    # ========== ОТПРАВЛЕН (SHIP) - С ПРОВЕРКОЙ СТАТУСА ==========
     if data.startswith("ship_"):
         order_num = data[5:]
         order_num = clean_order_number(order_num)
@@ -4467,6 +4518,15 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         order = get_order(order_num)
         if not order:
             await query.edit_message_text(f"❌ Заказ {order_num} не найден!")
+            return
+        
+        # Проверяем, можно ли отправлять (только из статуса ready)
+        if order.get('status') not in ['ready']:
+            await query.edit_message_text(
+                f"❌ Отправить можно только заказ в статусе '✅ Готов к выдаче'\n"
+                f"📦 Текущий статус: {order.get('status_text', 'неизвестен')}\n\n"
+                f"Сначала переведите заказ в статус '✅ Готов к выдаче'"
+            )
             return
         
         ctx.user_data['track_for'] = order_num
@@ -5237,7 +5297,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex("^(ℹ️ Помощь)$"), help_cmd))
     
     # Callback обработчики
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_|admin_remove_confirm_|admin_add_item_|admin_change_price_|admin_select_price_item_)"))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^(admin_|pay_|ordered_|arrived_|ready_|ship_|del_|issued_|cancel_|edit_delivery_|set_delivery_|detail_|order_changes_|admin_edit_items_|admin_remove_items_|admin_toggle_|admin_remove_confirm_|admin_add_item_|admin_change_price_|admin_select_price_item_|waiting_selection_|waiting_payment_)"))
     app.add_handler(CallbackQueryHandler(view_order, pattern="^view_"))
     app.add_handler(CallbackQueryHandler(my_orders, pattern="^back_orders_list$"))
     app.add_handler(CallbackQueryHandler(start, pattern="^main_menu_back$"))
