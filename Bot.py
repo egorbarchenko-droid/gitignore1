@@ -3,7 +3,7 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 18.0.2 - FULLY FIXED (Syntax error fixed)
+Версия: 18.0.3 - FULLY FIXED (Manager reply fixed, unified handler)
 """
 
 import os
@@ -381,16 +381,43 @@ def delivery_discount(order_sum: int) -> int:
     return min(100, 5 + steps * 5)
 
 def parse_products(text: str) -> List[Dict]:
-    """Парсинг запчастей из текста менеджера"""
+    """Парсинг запчастей из текста менеджера (улучшенная версия)"""
     if not text:
         return []
+    
     products = []
-    for line in text.strip().split('\n'):
+    
+    # Сначала пробуем разбить по строкам
+    lines = text.strip().split('\n')
+    
+    # Если только одна строка, пробуем разбить по запятым или точкам с запятой
+    if len(lines) == 1 and (',' in text or ';' in text):
+        if ',' in text:
+            lines = text.split(',')
+        else:
+            lines = text.split(';')
+    
+    for line in lines:
         line = line.strip()
         if not line:
             continue
         
+        # Ищем цену в строке (цифры с пробелами или точками, затем руб/₽)
         match = re.search(r'(\d{1,3}(?:[\s\.]?\d{3})*)\s*(?:руб|₽|р\.|рублей)', line, re.I)
+        
+        if not match and '=' in line:
+            # Пробуем найти цену после знака "="
+            parts = line.split('=')
+            if len(parts) == 2:
+                name_part = parts[0].strip()
+                price_part = parts[1].strip()
+                price_match = re.search(r'(\d+)', price_part)
+                if price_match:
+                    price = int(price_match.group(1))
+                    if 0 < price < 1000000:
+                        products.append({'name': name_part[:40], 'price': price})
+            continue
+        
         if not match:
             continue
         
@@ -405,6 +432,7 @@ def parse_products(text: str) -> List[Dict]:
         name = line[:match.start()].strip()
         name = re.sub(r'^[=\-•–—]+|[=\-•–—]+$', '', name).strip()
         name = re.sub(r'арт\.?\s*\S+', '', name).strip()
+        name = re.sub(r'\s+', ' ', name)
         name = name[:40] + ".." if safe_len(name) > 40 else name
         
         if name and price > 0:
@@ -421,7 +449,6 @@ def init_db():
         conn = sqlite3.connect(DB_PATH, timeout=30)
         c = conn.cursor()
         
-        # Таблица заказов
         c.execute('''CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT UNIQUE,
@@ -436,41 +463,35 @@ def init_db():
             created_at TEXT
         )''')
         
-        # Таблица гаража
         c.execute('''CREATE TABLE IF NOT EXISTS garage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER, vin TEXT, description TEXT, comment TEXT, created_at TEXT,
             UNIQUE(user_id, vin)
         )''')
         
-        # Таблица бонусов
         c.execute('''CREATE TABLE IF NOT EXISTS bonuses (
             user_id INTEGER PRIMARY KEY,
             balance INTEGER DEFAULT 0, total_earned INTEGER DEFAULT 0,
             total_spent INTEGER DEFAULT 0, referrer_id INTEGER DEFAULT NULL
         )''')
         
-        # История бонусов
         c.execute('''CREATE TABLE IF NOT EXISTS bonus_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER, order_number TEXT, amount INTEGER,
             type TEXT, description TEXT, created_at TEXT
         )''')
         
-        # Рефералы
         c.execute('''CREATE TABLE IF NOT EXISTS referrals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             referrer_id INTEGER, referred_id INTEGER, created_at TEXT
         )''')
         
-        # Отзывы
         c.execute('''CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT, user_id INTEGER, rating INTEGER,
             comment TEXT, created_at TEXT
         )''')
         
-        # История изменений заказов
         c.execute('''CREATE TABLE IF NOT EXISTS order_changes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT,
@@ -482,7 +503,6 @@ def init_db():
             created_at TEXT
         )''')
         
-        # Таблица документов оплаты
         c.execute('''CREATE TABLE IF NOT EXISTS payment_documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_number TEXT,
@@ -494,7 +514,6 @@ def init_db():
             verified INTEGER DEFAULT 0
         )''')
         
-        # Добавление недостающих колонок
         for col in ['phone', 'our_cost', 'tracking_number', 'final_order', 'comment', 'selected_products', 'style_city', 'style_highway']:
             try:
                 c.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
@@ -506,14 +525,12 @@ def init_db():
         except:
             pass
         
-        # Создание индексов
         indexes = [
             'CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)',
             'CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)',
             'CREATE INDEX IF NOT EXISTS idx_bonus_history_user_id ON bonus_history(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_bonus_history_order_number ON bonus_history(order_number)',
-            'CREATE INDEX IF NOT EXISTS idx_bonus_history_created_at ON bonus_history(created_at)',
             'CREATE INDEX IF NOT EXISTS idx_garage_user_id ON garage(user_id)',
             'CREATE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number)',
             'CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at)',
@@ -552,8 +569,6 @@ def backup_db():
             logger.info(f"Создан бэкап: {backup_name}")
     except Exception as e:
         logger.error(f"Ошибка бэкапа: {e}")
-
-# ========== ОПЕРАЦИИ С БАЗОЙ ДАННЫХ ==========
 
 def generate_unique_order_number() -> str:
     """Генерация уникального номера заказа"""
@@ -596,7 +611,6 @@ def update_order(order_number: str, **kwargs) -> bool:
         conn = sqlite3.connect(DB_PATH, timeout=30)
         c = conn.cursor()
         
-        # Проверка перехода статуса
         if 'status' in safe_kwargs:
             c.execute('SELECT status FROM orders WHERE order_number = ?', (order_number,))
             row = c.fetchone()
@@ -1436,7 +1450,6 @@ async def start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not upd or not upd.effective_user:
             return
         
-        # Обработка реферальной ссылки
         if ctx.args and safe_len(ctx.args) > 0 and ctx.args[0].startswith('ref_'):
             ref_id = safe_int(ctx.args[0][4:])
             if ref_id and ref_id != upd.effective_user.id:
@@ -1857,7 +1870,6 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await upd.message.reply_text("❌ Ошибка при создании заказа. Попробуйте позже.")
                 return ConversationHandler.END
             
-            # === ПРЕДЛОЖЕНИЕ СОХРАНИТЬ VIN В ГАРАЖ ===
             vin = data.get('vin', '')
             if vin and validate_vin(vin):
                 cars = get_cars(upd.effective_user.id)
@@ -1888,7 +1900,6 @@ async def confirm_order(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 reply_markup=main_menu
             )
             
-            # Уведомление менеджера
             try:
                 await ctx.bot.send_message(
                     MANAGER_ID,
@@ -2022,7 +2033,7 @@ async def save_vin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         query = upd.callback_query
         await query.answer()
-        vin = query.data[9:]  # убираем "save_vin_"
+        vin = query.data[9:]
         
         ctx.user_data['save_vin'] = vin
         await query.edit_message_text(
@@ -2301,10 +2312,8 @@ async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
         
-        # Сохраняем документ в БД
         save_payment_document(order_num, file_id, file_type, caption, user_id)
         
-        # Отправляем документ менеджеру
         try:
             manager_text = (
                 f"💳 НОВЫЙ ДОКУМЕНТ ОПЛАТЫ\n\n"
@@ -2377,9 +2386,7 @@ async def confirm_payment_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await upd.message.reply_text(f"❌ Заказ {order_num} не в статусе 'Ожидает оплаты'")
             return
         
-        # Меняем статус заказа
         if update_order(order_num, status='paid'):
-            # Уведомляем клиента
             try:
                 await ctx.bot.send_message(
                     order.get('user_id'),
@@ -2750,7 +2757,6 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
             await query.answer("❌ Это не ваш заказ!", show_alert=True)
             return
         
-        # Возврат бонусов
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -2911,7 +2917,7 @@ async def garage_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         query = upd.callback_query
         await query.answer()
-        vin = query.data[12:]  # убираем "garage_del_"
+        vin = query.data[12:]
         
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ ДА, УДАЛИТЬ", callback_data=f"garage_confirm_del_{vin}")],
@@ -2929,7 +2935,7 @@ async def garage_confirm_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         query = upd.callback_query
         await query.answer()
-        vin = query.data[18:]  # убираем "garage_confirm_del_"
+        vin = query.data[18:]
         
         if delete_car(query.from_user.id, vin):
             await query.edit_message_text(f"✅ Автомобиль {vin} удалён из гаража!")
@@ -2945,7 +2951,7 @@ async def garage_comment_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         query = upd.callback_query
         await query.answer()
-        vin = query.data[16:]  # убираем "garage_comment_"
+        vin = query.data[16:]
         ctx.user_data['comment_vin'] = vin
         
         await query.edit_message_text(
@@ -4004,7 +4010,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             status_key = order.get('status', '')
             is_cancelled = status_key in ['cancelled', 'cancelled_by_user']
             
-            # Получаем доступные переходы для текущего статуса
             allowed_transitions = STATUS_TRANSITIONS.get(status_key, [])
             
             text = (f"📋 ЗАКАЗ {order.get('order_number', '')}\n\n"
@@ -4020,7 +4025,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             
             kb = []
             
-            # Кнопки в зависимости от доступных переходов
             if 'waiting_selection' in allowed_transitions:
                 kb.append([InlineKeyboardButton("🟡 Перевести в 'Ожидает выбора'", callback_data=f"waiting_selection_{order_num}")])
             
@@ -4048,17 +4052,14 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if 'issued' in allowed_transitions:
                 kb.append([InlineKeyboardButton("📋 Выдан", callback_data=f"issued_{order_num}")])
             
-            # Кнопка отмены (доступна почти всегда, кроме уже отменённых)
             if 'cancelled' in allowed_transitions and not is_cancelled:
                 kb.append([InlineKeyboardButton("❌ Отменить заказ", callback_data=f"cancel_{order_num}")])
             
-            # Дополнительные кнопки (всегда доступны)
             kb.append([InlineKeyboardButton("✏️ Изменить доставку", callback_data=f"edit_delivery_{order_num}")])
             kb.append([InlineKeyboardButton("✏️ Редактировать товары", callback_data=f"admin_edit_items_{order_num}")])
             kb.append([InlineKeyboardButton("📜 История изменений", callback_data=f"order_changes_{order_num}")])
             kb.append([InlineKeyboardButton("🔍 Детали", callback_data=f"detail_{order_num}")])
             
-            # Кнопка удаления для отменённых заказов
             if is_cancelled:
                 kb.append([InlineKeyboardButton("🗑️ УДАЛИТЬ ЗАКАЗ НАВСЕГДА", callback_data=f"admin_delete_order_{order_num}")])
             
@@ -4070,7 +4071,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
-    # ========== НОВЫЕ ОБРАБОТЧИКИ СТАТУСОВ ==========
     if data.startswith("waiting_selection_"):
         order_num = data[18:]
         order_num = clean_order_number(order_num)
@@ -4089,7 +4089,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при обновлении статуса")
         return
     
-    # ========== ИСТОРИЯ ИЗМЕНЕНИЙ ==========
     if data.startswith("order_changes_"):
         order_num = data[14:]
         order_num = clean_order_number(order_num)
@@ -4128,7 +4127,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== ДЕТАЛИ ЗАКАЗА ==========
     if data.startswith("detail_"):
         order_num = data[7:]
         order_num = clean_order_number(order_num)
@@ -4167,7 +4165,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== РЕДАКТИРОВАНИЕ ТОВАРОВ ==========
     if data.startswith("admin_edit_items_"):
         order_num = data[17:]
         order_num = clean_order_number(order_num)
@@ -4208,7 +4205,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== АДМИН УДАЛЯЕТ ТОВАРЫ ==========
     if data.startswith("admin_remove_items_"):
         order_num = data[18:]
         order_num = clean_order_number(order_num)
@@ -4381,7 +4377,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ========== АДМИН ДОБАВЛЯЕТ ТОВАР ==========
     if data.startswith("admin_add_item_"):
         order_num = data[16:]
         order_num = clean_order_number(order_num)
@@ -4392,7 +4387,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return AdminAddItemStates.NAME
     
-    # ========== АДМИН МЕНЯЕТ ЦЕНУ ==========
     if data.startswith("admin_change_price_"):
         order_num = data[18:]
         order_num = clean_order_number(order_num)
@@ -4467,7 +4461,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Товар не найден")
         return
     
-    # ========== ИЗМЕНЕНИЕ ДОСТАВКИ ==========
     if data.startswith("edit_delivery_"):
         order_num = data[14:]
         order_num = clean_order_number(order_num)
@@ -4505,7 +4498,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"✅ Доставка изменена!\n\n{desc}")
         return
     
-    # ========== ОТПРАВЛЕН (SHIP) - С ПРОВЕРКОЙ СТАТУСА ==========
     if data.startswith("ship_"):
         order_num = data[5:]
         order_num = clean_order_number(order_num)
@@ -4519,7 +4511,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Заказ {order_num} не найден!")
             return
         
-        # Проверяем, можно ли отправлять (только из статуса ready)
         if order.get('status') not in ['ready']:
             await query.edit_message_text(
                 f"❌ Отправить можно только заказ в статусе '✅ Готов к выдаче'\n"
@@ -4535,7 +4526,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ========== ОСТАЛЬНЫЕ СТАТУСЫ ==========
     if data.startswith("pay_"):
         order_num = data[4:]
         order_num = clean_order_number(order_num)
@@ -4843,98 +4833,254 @@ async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в admin_change_price_input: {e}")
         return ConversationHandler.END
 
-# ========== ТРЕК-НОМЕР ==========
+# ========== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ МЕНЕДЖЕРА ==========
 
-async def track_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода трек-номера менеджера"""
+@require_manager
+async def manager_message_handler(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Универсальный обработчик сообщений менеджера (отправка подбора и трек-номера)"""
     try:
-        if not upd or not upd.effective_user or upd.effective_user.id != MANAGER_ID:
+        if not upd or not upd.message:
             return
         
-        if not upd.message or not upd.message.reply_to_message:
+        # Если не ответ на сообщение - игнорируем
+        if not upd.message.reply_to_message:
             return
         
-        tracking = upd.message.text.strip()
-        if len(tracking) < 3:
+        reply_text = upd.message.reply_to_message.text or ""
+        
+        # ========== СЛУЧАЙ 1: ОТВЕТ НА НОВЫЙ ЗАКАЗ (ОТПРАВКА ПОДБОРА) ==========
+        if "НОВЫЙ ЗАКАЗ #" in reply_text or re.search(r'RVN-[A-Z0-9]{6}', reply_text):
+            match = re.search(r"НОВЫЙ ЗАКАЗ #(RVN-\w{6})", reply_text) or re.search(r"(RVN-\w{6})", reply_text)
+            if not match:
+                await upd.message.reply_text("❌ Не удалось определить номер заказа.")
+                return
+            
+            order_num = match.group(1)
+            order = get_order(order_num)
+            
+            if not order:
+                await upd.message.reply_text(f"❌ Заказ {order_num} не найден.")
+                return
+            
+            if not upd.message.text:
+                await upd.message.reply_text("❌ Введите подбор запчастей.")
+                return
+            
+            products = parse_products(upd.message.text)
+            if not products:
+                await upd.message.reply_text(
+                    "❌ Не распознано. Используйте формат:\n"
+                    "Название = 1000 руб\n\n"
+                    "Пример:\n"
+                    "Масло RAVENOL = 11758 руб\n"
+                    "Фильтр масляный = 1066 руб"
+                )
+                return
+            
+            # Принудительно устанавливаем статус если нужно
+            current_status = order.get('status', '')
+            if current_status == 'pending':
+                update_order(order_num, status='waiting_selection')
+                logger.info(f"Статус заказа {order_num} изменён: pending -> waiting_selection")
+            
+            update_order(order_num, selected_products=upd.message.text)
+            
+            # Создаем клавиатуру для клиента
+            kb = []
+            for i, p in enumerate(products):
+                display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
+                kb.append([InlineKeyboardButton(f"⬜ {display_name} — {p['price']} руб.", 
+                                               callback_data=f"sel_{order_num}_{i}")])
+            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
+            
+            # Отправляем клиенту
+            await ctx.bot.send_message(
+                order.get('user_id'),
+                text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
+                     f"Менеджер подобрал для вас следующие позиции:\n\n"
+                     f"Выберите нужные запчасти (можно отметить несколько):",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            
+            await upd.message.reply_text(f"✅ Подбор запчастей для заказа {order_num} отправлен клиенту!")
             return
         
-        order_num = None
-        if ctx.user_data:
-            order_num = ctx.user_data.get('track_for')
+        # ========== СЛУЧАЙ 2: ОТВЕТ НА ЗАПРОС ТРЕК-НОМЕРА ==========
+        if "Введите трек-номер" in reply_text or "трек-номер" in reply_text.lower():
+            tracking = upd.message.text.strip()
+            if len(tracking) < 3:
+                await upd.message.reply_text("❌ Слишком короткий трек-номер (минимум 3 символа)")
+                return
+            
+            match = re.search(r'RVN-[A-Z0-9]{6}', reply_text)
+            if not match:
+                await upd.message.reply_text("❌ Не удалось определить номер заказа")
+                return
+            
+            order_num = match.group(0)
+            order = get_order(order_num)
+            
+            if not order:
+                await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+                return
+            
+            # Проверяем статус перед отправкой
+            if order.get('status') != 'ready':
+                await upd.message.reply_text(
+                    f"❌ Нельзя отправить заказ {order_num} из статуса '{order.get('status_text', 'неизвестен')}'\n"
+                    f"Сначала переведите заказ в статус '✅ Готов к выдаче'"
+                )
+                return
+            
+            if update_order(order_num, tracking_number=tracking, status='shipped'):
+                try:
+                    await ctx.bot.send_message(
+                        order.get('user_id'),
+                        text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер: {tracking}"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка уведомления: {e}")
+                await upd.message.reply_text(f"✅ Трек-номер добавлен!\n\n📦 {order_num}\n📮 {tracking}")
+            else:
+                await upd.message.reply_text(f"❌ Ошибка при обновлении заказа")
+            return
         
+        # ========== НЕИЗВЕСТНЫЙ ТИП ОТВЕТА ==========
+        await upd.message.reply_text(
+            "❌ Не удалось определить действие.\n\n"
+            "📦 Отправка подбора запчастей:\n"
+            "• Ответьте на сообщение '🆕 НОВЫЙ ЗАКАЗ #...'\n"
+            "• Используйте формат: Название = Цена руб\n\n"
+            "📮 Добавление трек-номера:\n"
+            "• Сначала нажмите '🚚 Отправлен' в админ-панели\n"
+            "• Затем ответьте на запрос бота с трек-номером"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка в manager_message_handler: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
+
+# ========== КОМАНДА /select ДЛЯ ОТПРАВКИ ПОДБОРА ==========
+
+@require_manager
+async def select_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Команда /select - отправить подбор запчастей клиенту"""
+    try:
+        if not upd or not upd.message:
+            return
+        
+        args = ctx.args
+        if not args or len(args) < 2:
+            await upd.message.reply_text(
+                "📦 ОТПРАВКА ПОДБОРА ЗАПЧАСТЕЙ\n\n"
+                "Использование:\n"
+                "/select НОМЕР_ЗАКАЗА ТЕКСТ_С_ЗАПЧАСТЯМИ\n\n"
+                "Пример:\n"
+                "/select RVN-7JTSO3 Масло RAVENOL = 11758 руб, Фильтр = 1066 руб\n\n"
+                "Или отправьте /select НОМЕР_ЗАКАЗА\n"
+                "а затем отдельным сообщением список запчастей"
+            )
+            return
+        
+        order_num = clean_order_number(args[0])
         if not order_num:
-            match = re.search(r'RVN-[A-Z0-9]{6}', upd.message.reply_to_message.text or '')
-            if match:
-                order_num = match.group(0)
-        
-        if not order_num:
-            await upd.message.reply_text("❌ Не удалось определить заказ")
+            await upd.message.reply_text("❌ Неверный формат номера заказа")
             return
         
-        order_num = clean_order_number(order_num)
+        # Если есть текст запчастей в аргументах
+        if len(args) >= 2:
+            parts_text = ' '.join(args[1:])
+            products = parse_products(parts_text)
+            
+            if not products:
+                await upd.message.reply_text(f"❌ Не распознаны запчасти в: {parts_text[:100]}\n\nИспользуйте формат: Название = Цена руб")
+                return
+            
+            order = get_order(order_num)
+            if not order:
+                await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+                return
+            
+            # Обновляем статус если нужно
+            if order.get('status') == 'pending':
+                update_order(order_num, status='waiting_selection')
+            
+            update_order(order_num, selected_products=parts_text)
+            
+            # Создаем клавиатуру для клиента
+            kb = []
+            for i, p in enumerate(products):
+                display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
+                kb.append([InlineKeyboardButton(f"⬜ {display_name} — {p['price']} руб.", 
+                                               callback_data=f"sel_{order_num}_{i}")])
+            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
+            
+            # Отправляем клиенту
+            await ctx.bot.send_message(
+                order.get('user_id'),
+                text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
+                     f"Менеджер подобрал для вас следующие позиции:\n\n"
+                     f"Выберите нужные запчасти (можно отметить несколько):",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            
+            await upd.message.reply_text(f"✅ Подбор для заказа {order_num} отправлен клиенту!")
+        else:
+            # Если только номер - сохраняем в сессию
+            ctx.user_data['pending_selection'] = order_num
+            await upd.message.reply_text(
+                f"📦 Заказ {order_num}\n\n"
+                f"Отправьте список запчастей следующим сообщением в формате:\n"
+                f"Название = Цена руб\n\n"
+                f"Пример:\n"
+                f"Масло RAVENOL DXG 5W-30 5л = 11758 руб\n"
+                f"Фильтр масляный = 1066 руб"
+            )
+    except Exception as e:
+        logger.error(f"Ошибка select_command: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+@require_manager
+async def process_selection_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработка текста с запчастями после /select"""
+    try:
+        if not upd or not upd.message:
+            return
+        
+        order_num = ctx.user_data.get('pending_selection')
         if not order_num:
-            await upd.message.reply_text("❌ Неверный формат заказа")
+            return
+        
+        products = parse_products(upd.message.text)
+        if not products:
+            await upd.message.reply_text(
+                "❌ Не распознано. Используйте формат:\n"
+                "Название = Цена руб\n\n"
+                "Пример:\n"
+                "Масло RAVENOL = 11758 руб"
+            )
             return
         
         order = get_order(order_num)
         if not order:
             await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+            del ctx.user_data['pending_selection']
             return
         
-        if update_order(order_num, tracking_number=tracking, status='shipped'):
-            try:
-                await ctx.bot.send_message(
-                    order.get('user_id'),
-                    text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер: {tracking}"
-                )
-            except:
-                pass
-            await upd.message.reply_text(f"✅ Трек-номер добавлен!\n\n📦 {order_num}\n📮 {tracking}")
-        else:
-            await upd.message.reply_text(f"❌ Ошибка при обновлении заказа")
+        # Обновляем статус если нужно
+        if order.get('status') == 'pending':
+            update_order(order_num, status='waiting_selection')
         
-        if ctx.user_data and 'track_for' in ctx.user_data:
-            del ctx.user_data['track_for']
-    except Exception as e:
-        logger.error(f"Ошибка в track_input: {e}")
-
-# ========== ОТВЕТ МЕНЕДЖЕРА (ПОДБОР ЗАПЧАСТЕЙ) ==========
-
-@require_manager
-async def manager_reply(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Ответ менеджера на заказ (подбор запчастей)"""
-    try:
-        if not upd or not upd.message or not upd.message.reply_to_message:
-            return
+        update_order(order_num, selected_products=upd.message.text)
         
-        reply_text = upd.message.reply_to_message.text or ""
-        match = re.search(r"НОВЫЙ ЗАКАЗ #(RVN-\w{6})", reply_text) or re.search(r"(RVN-\w{6})", reply_text)
-        
-        if not match:
-            await upd.message.reply_text("❌ Не удалось определить номер заказа.")
-            return
-        
-        order_num = match.group(1)
-        order = get_order(order_num)
-        
-        if not order:
-            await upd.message.reply_text(f"❌ Заказ {order_num} не найден.")
-            return
-        
-        if not upd.message.text:
-            await upd.message.reply_text("❌ Введите подбор запчастей.")
-            return
-        
-        products = parse_products(upd.message.text)
-        if not products:
-            await upd.message.reply_text("❌ Не распознано. Формат:\nНазвание = 1000 руб")
-            return
-        
-        update_order(order_num, selected_products=upd.message.text, status='waiting_selection')
-        
-        kb = [[InlineKeyboardButton(f"⬜ {p['name'][:25]} — {p['price']} руб.", callback_data=f"sel_{order_num}_{i}")] for i, p in enumerate(products)]
+        # Создаем клавиатуру
+        kb = []
+        for i, p in enumerate(products):
+            display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
+            kb.append([InlineKeyboardButton(f"⬜ {display_name} — {p['price']} руб.", 
+                                           callback_data=f"sel_{order_num}_{i}")])
         kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
         
+        # Отправляем клиенту
         await ctx.bot.send_message(
             order.get('user_id'),
             text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
@@ -4943,9 +5089,11 @@ async def manager_reply(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb)
         )
         
-        await upd.message.reply_text(f"✅ Подбор запчастей для заказа {order_num} отправлен клиенту!")
+        await upd.message.reply_text(f"✅ Подбор для заказа {order_num} отправлен клиенту!")
+        del ctx.user_data['pending_selection']
     except Exception as e:
-        logger.error(f"Ошибка в manager_reply: {e}")
+        logger.error(f"Ошибка process_selection_text: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
 # ========== ВЫБОР ЗАПЧАСТЕЙ КЛИЕНТОМ ==========
 
@@ -5148,6 +5296,7 @@ def main():
         ("batch_del", "Массовое удаление заказов"),
         ("confirm_payment", "Подтвердить оплату заказа"),
         ("payment_docs", "Показать документы оплаты"),
+        ("select", "Отправить подбор запчастей"),
     ]
     
     async def set_commands(application):
@@ -5278,6 +5427,7 @@ def main():
     app.add_handler(CommandHandler("delivery", delivery_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", admin_menu))
+    app.add_handler(CommandHandler("select", select_command))
     
     # Админ команды для удаления заказов
     app.add_handler(CommandHandler("delorder", delete_order_command))
@@ -5313,9 +5463,9 @@ def main():
     app.add_handler(CallbackQueryHandler(select_cb, pattern="^sel_"))
     app.add_handler(CallbackQueryHandler(finalize_cb, pattern="^fin_"))
     
-    # Ответы менеджера
-    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), track_input))
-    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_reply))
+    # Универсальный обработчик сообщений менеджера (ЗАМЕНИТЬ старые обработчики)
+    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_message_handler))
+    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID) & filters.TEXT & ~filters.COMMAND, process_selection_text))
     
     app.add_error_handler(error_handler)
     
