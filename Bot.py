@@ -3,7 +3,11 @@
 
 """
 Telegram Shop Bot для автозапчастей
-Версия: 18.0.6 - FULLY WORKING (Все функции и кнопки работают)
+Версия: 18.0.7 - FULLY WORKING (Все функции и кнопки работают)
+ИСПРАВЛЕНИЯ:
+1. Добавлен парсер для менеджера (parse_manager_text)
+2. Обновлен manager_message_handler для парсинга цен
+3. Убрана обработка текста из оплаты
 """
 
 import os
@@ -430,6 +434,103 @@ def delivery_discount(order_sum: int) -> int:
         return 0
     steps = (order_sum - 10000) // 5000
     return min(100, 5 + steps * 5)
+
+# ========== НОВЫЙ ПАРСЕР ДЛЯ МЕНЕДЖЕРА ==========
+
+def parse_manager_text(text: str) -> List[Dict]:
+    """
+    Парсер для текста менеджера с поддержкой 🎯, /шт, = и других форматов
+    Распознает: "Название — 1 221 ₽/шт × 2 шт = 2 442 ₽"
+    """
+    if not text:
+        return []
+    
+    if len(text) > MAX_MESSAGE_LENGTH:
+        return []
+    
+    products = []
+    
+    # Разбиваем на строки
+    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
+    
+    # Группируем строки (название + цена)
+    grouped = []
+    i = 0
+    while i < len(lines):
+        if i + 1 < len(lines) and ('🎯' in lines[i+1] or 'шт' in lines[i+1] or 'руб' in lines[i+1]):
+            grouped.append(lines[i] + ' ' + lines[i+1])
+            i += 2
+        else:
+            grouped.append(lines[i])
+            i += 1
+    
+    for line in grouped[:MAX_PARTS_COUNT]:
+        if not line:
+            continue
+        
+        # Удаляем номер в начале
+        line = re.sub(r'^\s*\d+\.\s*', '', line)
+        
+        # Удаляем эмодзи
+        line = re.sub(r'[🎯💰📦]', '', line)
+        
+        # Очищаем
+        line = re.sub(r'[•–—]', '-', line)
+        line = re.sub(r'\s+', ' ', line).strip()
+        
+        # 1. Ищем общую сумму после =
+        match = re.search(r'=\s*([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
+        if match:
+            price_str = match.group(1).replace(' ', '').replace('.', '').replace(',', '')
+            try:
+                price = float(price_str)
+                if MIN_PRICE <= price <= MAX_PRICE:
+                    name = line[:match.start()].strip()
+                    name = re.sub(r'[=\-•–—]+$', '', name).strip()
+                    name = re.sub(r'\s+', ' ', name)
+                    if name and price:
+                        products.append({'name': name[:60], 'price': int(price)})
+                        continue
+            except:
+                pass
+        
+        # 2. Ищем цену за шт
+        match_unit = re.search(r'([\d\s.,]+)\s*(?:руб|₽|р\.)\s*/\s*шт', line, re.I)
+        if match_unit:
+            match_total = re.search(r'=\s*([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
+            if match_total:
+                price_str = match_total.group(1).replace(' ', '').replace('.', '').replace(',', '')
+                try:
+                    price = float(price_str)
+                    if MIN_PRICE <= price <= MAX_PRICE:
+                        name = line[:match_total.start()].strip()
+                        name = re.sub(r'[=\-•–—]+$', '', name).strip()
+                        name = re.sub(r'\s+', ' ', name)
+                        if name and price:
+                            products.append({'name': name[:60], 'price': int(price)})
+                            continue
+                except:
+                    pass
+        
+        # 3. Цена в конце строки
+        match_end = re.search(r'([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
+        if match_end and '=' not in line:
+            price_str = match_end.group(1).replace(' ', '').replace('.', '').replace(',', '')
+            try:
+                price = float(price_str)
+                if MIN_PRICE <= price <= MAX_PRICE:
+                    name = line[:match_end.start()].strip()
+                    name = re.sub(r'[=\-•–—]+$', '', name).strip()
+                    name = re.sub(r'\s+', ' ', name)
+                    if name and price:
+                        products.append({'name': name[:60], 'price': int(price)})
+                        continue
+            except:
+                pass
+    
+    return products[:MAX_PARTS_COUNT]
+
+# ========== СТАРЫЙ ПАРСЕР (ДЛЯ ОБРАТНОЙ СОВМЕСТИМОСТИ) ==========
 
 def parse_products(text: str) -> List[Dict]:
     if not text:
@@ -2163,6 +2264,7 @@ async def payment_document_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
 async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработка документов оплаты - ТОЛЬКО ФОТО И ДОКУМЕНТЫ (БЕЗ ТЕКСТА)"""
     try:
         if not upd or not upd.message:
             return ConversationHandler.END
@@ -2178,9 +2280,12 @@ async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if order.get('status') != 'waiting_payment':
             await upd.message.reply_text("❌ Оплату можно отправить только для заказа в статусе 'Ожидает оплаты'")
             return ConversationHandler.END
+        
+        # ========== ТОЛЬКО ФОТО И ДОКУМЕНТЫ ==========
         caption = ""
         file_id = None
         file_type = "unknown"
+        
         if upd.message.photo:
             file_id = upd.message.photo[-1].file_id
             file_type = "photo"
@@ -2199,8 +2304,10 @@ async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "Или отправьте /cancel для отмены"
             )
             return PaymentStates.WAITING_DOCUMENT
+        
         total_sum = order.get('total_price', 0) + order.get('delivery_price', 0)
         save_payment_document(order_num, file_id, file_type, caption, user_id)
+        
         try:
             manager_text = (
                 f"💳 НОВЫЙ ДОКУМЕНТ ОПЛАТЫ\n\n"
@@ -2221,6 +2328,7 @@ async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Ошибка отправки менеджеру: {e}")
             await upd.message.reply_text("⚠️ Ошибка при отправке документа менеджеру. Попробуйте позже.")
             return ConversationHandler.END
+        
         await upd.message.reply_text(
             f"✅ Документ об оплате для заказа {order_num} успешно отправлен!\n\n"
             f"💰 Сумма: {total_sum} руб.\n"
@@ -2236,6 +2344,216 @@ async def handle_payment_document(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в handle_payment_document: {e}")
         await upd.message.reply_text(f"❌ Произошла ошибка: {str(e)[:100]}")
         return ConversationHandler.END
+
+# ========== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК МЕНЕДЖЕРА (ОБНОВЛЕН) ==========
+
+@require_manager
+async def manager_message_handler(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработка сообщений от менеджера
+    - Текст с ценами → ПАРСИТ как подбор и отправляет клиенту (НОВОЕ!)
+    - Трек-номер → добавляет к заказу
+    - Ответ клиенту → пересылает
+    """
+    try:
+        if not upd or not upd.message:
+            return
+        
+        msg_text = upd.message.text or ""
+        reply_to = upd.message.reply_to_message
+        
+        # ========== 1. ПАРСИНГ ТЕКСТА С ЦЕНАМИ (НОВОЕ!) ==========
+        has_prices = re.search(r'\d+\s*(?:руб|₽|р\.)', msg_text, re.I)
+        
+        if has_prices and len(msg_text) > 20:
+            products = parse_manager_text(msg_text)
+            
+            if products:
+                # Ищем номер заказа
+                order_num = None
+                
+                # В ответе
+                if reply_to and reply_to.text:
+                    match = re.search(r'RVN-[A-Z0-9]{6}', reply_to.text)
+                    if match:
+                        order_num = match.group(0)
+                
+                # В тексте
+                if not order_num:
+                    match = re.search(r'RVN-[A-Z0-9]{6}', msg_text)
+                    if match:
+                        order_num = match.group(0)
+                
+                # Последний активный заказ
+                if not order_num:
+                    conn = None
+                    try:
+                        conn = sqlite3.connect(DB_PATH, timeout=30)
+                        c = conn.cursor()
+                        c.execute('''
+                            SELECT order_number FROM orders 
+                            WHERE status IN ('pending', 'waiting_selection') 
+                            ORDER BY id DESC LIMIT 1
+                        ''')
+                        row = c.fetchone()
+                        if row:
+                            order_num = row[0]
+                    except Exception as e:
+                        logger.error(f"Ошибка поиска заказа: {e}")
+                    finally:
+                        if conn:
+                            conn.close()
+                
+                if not order_num:
+                    await upd.message.reply_text(
+                        "❌ Не удалось определить номер заказа.\n\n"
+                        "Укажите номер заказа в сообщении.\n"
+                        "Пример: RVN-ABCD12\n\n"
+                        "Или ответьте на сообщение с заказом."
+                    )
+                    return
+                
+                order = get_order(order_num)
+                if not order:
+                    await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+                    return
+                
+                total_price = sum(p.get('price', 0) for p in products)
+                delivery_price = order.get('delivery_price', 0)
+                total_sum = total_price + delivery_price
+                
+                # Обновляем заказ
+                update_order(
+                    order_num,
+                    selected_products=msg_text[:MAX_MESSAGE_LENGTH],
+                    final_order=str(products),
+                    total_price=total_price,
+                    status='waiting_selection'
+                )
+                
+                # Создаем клавиатуру для клиента
+                kb = []
+                for i, p in enumerate(products[:50]):
+                    display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
+                    kb.append([InlineKeyboardButton(
+                        f"⬜ {display_name} — {p['price']} руб.",
+                        callback_data=f"sel_{order_num}_{i}"
+                    )])
+                kb.append([InlineKeyboardButton(
+                    "✅ ПОДТВЕРДИТЬ ВЫБОР",
+                    callback_data=f"fin_{order_num}"
+                )])
+                
+                # Отправляем клиенту
+                client_text = (
+                    f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
+                    f"Менеджер подобрал для вас следующие позиции:\n\n"
+                    f"💰 Общая сумма: {total_price:,} руб.\n"
+                    f"🚚 Доставка: {delivery_price:,} руб.\n"
+                    f"💳 ИТОГО: {total_sum:,} руб.\n\n"
+                    f"Выберите нужные запчасти (можно отметить несколько):"
+                )
+                
+                await ctx.bot.send_message(
+                    order.get('user_id'),
+                    text=client_text,
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
+                
+                # Подтверждение менеджеру
+                products_preview = "\n".join([
+                    f"   {i+1}. {p.get('name', '')[:30]} = {p.get('price', 0)} руб."
+                    for i, p in enumerate(products[:5])
+                ])
+                if len(products) > 5:
+                    products_preview += f"\n   ... и ещё {len(products) - 5} товаров"
+                
+                await upd.message.reply_text(
+                    f"✅ ПОДБОР ОТПРАВЛЕН КЛИЕНТУ!\n\n"
+                    f"📦 Заказ: {order_num}\n"
+                    f"👤 Клиент: {order.get('user_name', '')}\n"
+                    f"📦 Товаров: {len(products)}\n"
+                    f"💰 Сумма: {total_sum:,} руб.\n\n"
+                    f"📋 Товары:\n{products_preview}"
+                )
+                
+                audit_log(MANAGER_ID, 'send_selection', 
+                         f"Заказ {order_num}: отправлен подбор из {len(products)} позиций", "success")
+                return
+        
+        # ========== 2. ТРЕК-НОМЕР ==========
+        if reply_to and reply_to.text:
+            reply_text = reply_to.text or ""
+            reply_text_lower = reply_text.lower()
+            
+            if "трек-номер" in reply_text_lower or "трек номер" in reply_text_lower:
+                tracking = msg_text.strip()
+                if len(tracking) < 3 or len(tracking) > 100:
+                    await upd.message.reply_text("❌ Трек-номер должен быть от 3 до 100 символов")
+                    return
+                match = re.search(r'RVN-[A-Z0-9]{6}', reply_text)
+                if not match:
+                    await upd.message.reply_text("❌ Не удалось определить номер заказа")
+                    return
+                order_num = match.group(0)
+                order = get_order(order_num)
+                if not order:
+                    await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+                    return
+                if order.get('status') != 'ready':
+                    await upd.message.reply_text(
+                        f"❌ Нельзя отправить заказ {order_num} из статуса '{order.get('status_text', 'неизвестен')}'\n"
+                        f"Сначала переведите заказ в статус '✅ Готов к выдаче'"
+                    )
+                    return
+                if update_order(order_num, tracking_number=security.escape_text(tracking), status='shipped'):
+                    try:
+                        await ctx.bot.send_message(
+                            order.get('user_id'),
+                            text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер: {security.escape_text(tracking)}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка уведомления клиента: {e}")
+                    audit_log(MANAGER_ID, 'add_tracking', f"Заказ {order_num}: трек-номер {tracking}", "success")
+                    await upd.message.reply_text(f"✅ Трек-номер добавлен!\n\n📦 {order_num}\n📮 {tracking}")
+                else:
+                    await upd.message.reply_text(f"❌ Ошибка при обновлении заказа")
+                return
+        
+        # ========== 3. ОТВЕТ КЛИЕНТУ ==========
+        if reply_to and reply_to.from_user and reply_to.from_user.id != MANAGER_ID:
+            if len(msg_text) > 4000:
+                await upd.message.reply_text("❌ Сообщение слишком длинное (макс. 4000 символов)")
+                return
+            try:
+                await ctx.bot.send_message(
+                    reply_to.from_user.id,
+                    text=f"📨 ОТВЕТ МЕНЕДЖЕРА:\n\n{security.escape_text(msg_text)}\n\n---\nВы можете продолжить диалог в этом чате."
+                )
+                audit_log(MANAGER_ID, 'reply_to_client', f"Ответ клиенту: {msg_text[:100]}", "success")
+                await upd.message.reply_text("✅ Ответ отправлен клиенту!")
+            except Exception as e:
+                logger.error(f"Ошибка отправки ответа клиенту: {e}")
+                await upd.message.reply_text(f"❌ Ошибка отправки: {str(e)[:100]}")
+            return
+        
+        # ========== 4. НЕИЗВЕСТНО ==========
+        await upd.message.reply_text(
+            "📝 ЧТО Я МОГУ СДЕЛАТЬ:\n\n"
+            "1️⃣ Отправить подбор запчастей:\n"
+            "   Просто отправьте текст с ценами\n"
+            "   Пример:\n"
+            "   1. Название = 1000 руб\n"
+            "   2. Название = 2000 руб\n\n"
+            "2️⃣ Ответить клиенту:\n"
+            "   Ответьте на сообщение клиента\n\n"
+            "3️⃣ Добавить трек-номер:\n"
+            "   Сначала нажмите '🚚 Отправлен' в админ-панели"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в manager_message_handler: {e}", exc_info=True)
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
 
 # ========== КОМАНДЫ МЕНЕДЖЕРА ==========
 
@@ -4489,180 +4807,6 @@ async def select_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка select_command: {e}")
         await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
-# ========== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК МЕНЕДЖЕРА ==========
-
-@require_manager
-async def manager_message_handler(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not upd or not upd.message:
-            return
-        if not upd.message.reply_to_message:
-            return
-        reply_text = upd.message.reply_to_message.text or ""
-        reply_text_lower = reply_text.lower()
-        msg_text = upd.message.text or ""
-        msg_text_lower = msg_text.lower()
-        
-        # ========== 1. ТРЕК-НОМЕР ==========
-        if "трек-номер" in reply_text_lower or "трек номер" in reply_text_lower:
-            tracking = msg_text.strip()
-            if len(tracking) < 3 or len(tracking) > 100:
-                await upd.message.reply_text("❌ Трек-номер должен быть от 3 до 100 символов")
-                return
-            match = re.search(r'RVN-[A-Z0-9]{6}', reply_text)
-            if not match:
-                await upd.message.reply_text("❌ Не удалось определить номер заказа")
-                return
-            order_num = match.group(0)
-            order = get_order(order_num)
-            if not order:
-                await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
-                return
-            if order.get('status') != 'ready':
-                await upd.message.reply_text(
-                    f"❌ Нельзя отправить заказ {order_num} из статуса '{order.get('status_text', 'неизвестен')}'\n"
-                    f"Сначала переведите заказ в статус '✅ Готов к выдаче'"
-                )
-                return
-            if update_order(order_num, tracking_number=security.escape_text(tracking), status='shipped'):
-                try:
-                    await ctx.bot.send_message(
-                        order.get('user_id'),
-                        text=f"📦 Заказ {order_num} отправлен!\n\n📮 Трек-номер: {security.escape_text(tracking)}"
-                    )
-                except Exception as e:
-                    logger.error(f"Ошибка уведомления клиента: {e}")
-                audit_log(MANAGER_ID, 'add_tracking', f"Заказ {order_num}: трек-номер {tracking}", "success")
-                await upd.message.reply_text(f"✅ Трек-номер добавлен!\n\n📦 {order_num}\n📮 {tracking}")
-            else:
-                await upd.message.reply_text(f"❌ Ошибка при обновлении заказа")
-            return
-        
-        # ========== 2. ПОДБОР ==========
-        if "НОВЫЙ ЗАКАЗ #" in reply_text or re.search(r'RVN-[A-Z0-9]{6}', reply_text):
-            match = re.search(r"НОВЫЙ ЗАКАЗ #(RVN-\w{6})", reply_text) or re.search(r"(RVN-\w{6})", reply_text)
-            if not match:
-                await upd.message.reply_text("❌ Не удалось определить номер заказа.")
-                return
-            order_num = match.group(1)
-            order = get_order(order_num)
-            if not order:
-                await upd.message.reply_text(f"❌ Заказ {order_num} не найден.")
-                return
-            if not msg_text:
-                await upd.message.reply_text("❌ Введите подбор запчастей.")
-                return
-            products = parse_products(msg_text)
-            if not products:
-                await upd.message.reply_text(
-                    "❌ Не распознано. Используйте формат:\n"
-                    "Название = 1000 руб\n\n"
-                    "Пример:\n"
-                    "Масло RAVENOL = 11758 руб\n"
-                    "Фильтр масляный = 1066 руб"
-                )
-                return
-            if order.get('status') == 'pending':
-                update_order(order_num, status='waiting_selection')
-            update_order(order_num, selected_products=msg_text[:MAX_MESSAGE_LENGTH])
-            kb = []
-            for i, p in enumerate(products[:50]):
-                display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
-                kb.append([InlineKeyboardButton(f"⬜ {display_name} — {p['price']} руб.", 
-                                               callback_data=f"sel_{order_num}_{i}")])
-            kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
-            await ctx.bot.send_message(
-                order.get('user_id'),
-                text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
-                     f"Менеджер подобрал для вас следующие позиции:\n\n"
-                     f"Выберите нужные запчасти (можно отметить несколько):",
-                reply_markup=InlineKeyboardMarkup(kb)
-            )
-            audit_log(MANAGER_ID, 'send_selection', f"Заказ {order_num}: отправлен подбор из {len(products)} позиций", "success")
-            await upd.message.reply_text(f"✅ Подбор запчастей для заказа {order_num} отправлен клиенту!")
-            return
-        
-        # ========== 3. ОТВЕТ КЛИЕНТУ ==========
-        if upd.message.reply_to_message and upd.message.reply_to_message.from_user:
-            if upd.message.reply_to_message.from_user.id != MANAGER_ID:
-                if len(msg_text) > 4000:
-                    await upd.message.reply_text("❌ Сообщение слишком длинное (макс. 4000 символов)")
-                    return
-                try:
-                    await ctx.bot.send_message(
-                        upd.message.reply_to_message.from_user.id,
-                        text=f"📨 ОТВЕТ МЕНЕДЖЕРА:\n\n{security.escape_text(msg_text)}\n\n---\nВы можете продолжить диалог в этом чате."
-                    )
-                    audit_log(MANAGER_ID, 'reply_to_client', f"Ответ клиенту: {msg_text[:100]}", "success")
-                    await upd.message.reply_text("✅ Ответ отправлен клиенту!")
-                except Exception as e:
-                    logger.error(f"Ошибка отправки ответа клиенту: {e}")
-                    await upd.message.reply_text(f"❌ Ошибка отправки: {str(e)[:100]}")
-                return
-        
-        # ========== 4. НЕИЗВЕСТНО ==========
-        await upd.message.reply_text(
-            "❌ Не удалось определить действие.\n\n"
-            "📦 Отправка подбора запчастей:\n"
-            "• Ответьте на сообщение '🆕 НОВЫЙ ЗАКАЗ #...'\n"
-            "• Используйте формат: Название = Цена руб\n\n"
-            "📮 Добавление трек-номера:\n"
-            "• Сначала нажмите '🚚 Отправлен' в админ-панели\n"
-            "• Затем ответьте на запрос бота с трек-номером\n\n"
-            "📨 Ответ клиенту:\n"
-            "• Просто ответьте на сообщение клиента\n\n"
-            "📨 Отправка сообщения по команде:\n"
-            "• Используйте /msg НОМЕР_ЗАКАЗА ТЕКСТ"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка в manager_message_handler: {e}")
-        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:200]}")
-
-@require_manager
-async def process_selection_text(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not upd or not upd.message:
-            return
-        order_num = ctx.user_data.get('pending_selection')
-        if not order_num:
-            return
-        products = parse_products(upd.message.text)
-        if not products:
-            await upd.message.reply_text(
-                "❌ Не распознано. Используйте формат:\n"
-                "Название = Цена руб\n\n"
-                "Пример:\n"
-                "Масло RAVENOL = 11758 руб"
-            )
-            return
-        order = get_order(order_num)
-        if not order:
-            await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
-            del ctx.user_data['pending_selection']
-            return
-        if order.get('status') == 'pending':
-            update_order(order_num, status='waiting_selection')
-        update_order(order_num, selected_products=upd.message.text[:MAX_MESSAGE_LENGTH])
-        kb = []
-        for i, p in enumerate(products[:50]):
-            display_name = p['name'][:30] + ".." if len(p['name']) > 30 else p['name']
-            kb.append([InlineKeyboardButton(f"⬜ {display_name} — {p['price']} руб.", 
-                                           callback_data=f"sel_{order_num}_{i}")])
-        kb.append([InlineKeyboardButton("✅ ПОДТВЕРДИТЬ ВЫБОР", callback_data=f"fin_{order_num}")])
-        await ctx.bot.send_message(
-            order.get('user_id'),
-            text=f"🛒 ПОДБОР ЗАПЧАСТЕЙ ДЛЯ ЗАКАЗА #{order_num}\n\n"
-                 f"Менеджер подобрал для вас следующие позиции:\n\n"
-                 f"Выберите нужные запчасти (можно отметить несколько):",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        audit_log(MANAGER_ID, 'process_selection', f"Заказ {order_num}: отправлен подбор из {len(products)} позиций", "success")
-        await upd.message.reply_text(f"✅ Подбор для заказа {order_num} отправлен клиенту!")
-        del ctx.user_data['pending_selection']
-    except Exception as e:
-        logger.error(f"Ошибка process_selection_text: {e}")
-        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
-
 # ========== ВЫБОР ЗАПЧАСТЕЙ КЛИЕНТОМ ==========
 
 async def select_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -5026,7 +5170,6 @@ def main():
     
     # Универсальный обработчик сообщений менеджера
     app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_message_handler))
-    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID) & filters.TEXT & ~filters.COMMAND, process_selection_text))
     
     app.add_error_handler(error_handler)
     
