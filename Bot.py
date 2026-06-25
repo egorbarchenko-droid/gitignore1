@@ -5168,8 +5168,8 @@ def main():
     app.add_handler(CallbackQueryHandler(select_cb, pattern="^sel_"))
     app.add_handler(CallbackQueryHandler(finalize_cb, pattern="^fin_"))
     
-    # Универсальный обработчик сообщений менеджера
-    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID), manager_message_handler))
+    # Универсальный обработчик сообщений менеджера (ОБНОВЛЕН!)
+    app.add_handler(MessageHandler(filters.Chat(chat_id=MANAGER_ID) & filters.TEXT & ~filters.COMMAND, manager_message_handler))
     
     app.add_error_handler(error_handler)
     
