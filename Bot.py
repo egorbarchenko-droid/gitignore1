@@ -4146,7 +4146,205 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
 # ========== ЗАПУСК ==========
+# ========== АДМИН: ДОБАВЛЕНИЕ ТОВАРА ==========
 
+async def admin_add_item_name_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Получение названия товара для добавления в заказ"""
+    try:
+        if not upd or not upd.message:
+            return ConversationHandler.END
+        
+        order_num = ctx.user_data.get('admin_add_item_order') if ctx.user_data else None
+        if not order_num:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+            return ConversationHandler.END
+        
+        name = upd.message.text.strip()
+        if not name or len(name) > 200:
+            await upd.message.reply_text("❌ Название товара не может быть пустым или слишком длинным (макс. 200 символов). Попробуйте снова:")
+            return AdminAddItemStates.NAME
+        
+        ctx.user_data['admin_add_item_name'] = security.escape_text(name)
+        await upd.message.reply_text(
+            f"➕ ДОБАВЛЕНИЕ ТОВАРА В ЗАКАЗ {order_num}\n\n"
+            f"📝 Название: {name}\n\n"
+            f"Введите цену товара (целое число, от {MIN_PRICE} до {MAX_PRICE} руб.):"
+        )
+        return AdminAddItemStates.PRICE
+    except Exception as e:
+        logger.error(f"Ошибка в admin_add_item_name_input: {e}")
+        return ConversationHandler.END
+
+async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Получение цены товара для добавления"""
+    try:
+        if not upd or not upd.message:
+            return ConversationHandler.END
+        
+        order_num = ctx.user_data.get('admin_add_item_order') if ctx.user_data else None
+        if not order_num:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+            return ConversationHandler.END
+        
+        try:
+            price = int(upd.message.text.strip())
+            if not security.validate_price(price):
+                raise ValueError
+        except ValueError:
+            await upd.message.reply_text(f"❌ Введите корректную цену (от {MIN_PRICE} до {MAX_PRICE} руб.):")
+            return AdminAddItemStates.PRICE
+        
+        name = ctx.user_data.get('admin_add_item_name', 'Новый товар') if ctx.user_data else 'Новый товар'
+        order = get_order(order_num)
+        if not order:
+            await upd.message.reply_text("❌ Заказ не найден")
+            return ConversationHandler.END
+        
+        final_order = order.get('final_order', '')
+        selected_parts = safe_parse_parts(final_order)
+        new_item = {'name': name, 'price': price}
+        selected_parts.append(new_item)
+        new_total = sum(p.get('price', 0) for p in selected_parts if isinstance(p, dict))
+        delivery_price = order.get('delivery_price', 0)
+        
+        update_order(order_num, final_order=str(selected_parts), total_price=new_total)
+        add_order_change(order_num, MANAGER_ID, 'add_item', '', f"{name} - {price} руб.", "Добавление товара администратором")
+        audit_log(MANAGER_ID, 'admin_add_item', f"Заказ {order_num}: добавлен товар {name} за {price} руб.", "success")
+        
+        await ctx.bot.send_message(
+            order.get('user_id'),
+            text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
+                 f"➕ Добавлен товар: {name} - {price} руб.\n"
+                 f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+                 f"По вопросам обращайтесь к менеджеру."
+        )
+        
+        await upd.message.reply_text(
+            f"✅ Товар добавлен в заказ {order_num}!\n\n"
+            f"➕ {name} — {price} руб.\n"
+            f"💰 Новая сумма: {new_total + delivery_price} руб.\n\n"
+            f"Клиент получил уведомление."
+        )
+        
+        if ctx.user_data:
+            ctx.user_data.pop('admin_add_item_order', None)
+            ctx.user_data.pop('admin_add_item_name', None)
+        
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в admin_add_item_price_input: {e}")
+        return ConversationHandler.END
+
+# ========== АДМИН: ИЗМЕНЕНИЕ ЦЕНЫ ==========
+
+async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Получение новой цены для товара"""
+    try:
+        if not upd or not upd.message:
+            return ConversationHandler.END
+        
+        order_num = ctx.user_data.get('admin_change_price_order') if ctx.user_data else None
+        if not order_num:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+            return ConversationHandler.END
+        
+        try:
+            new_price = int(upd.message.text.strip())
+            if not security.validate_price(new_price):
+                raise ValueError
+        except ValueError:
+            await upd.message.reply_text(f"❌ Введите корректную цену (от {MIN_PRICE} до {MAX_PRICE} руб.):")
+            return AdminChangePriceStates.NEW_PRICE
+        
+        item_idx = ctx.user_data.get('admin_change_price_idx', -1) if ctx.user_data else -1
+        selected_parts = ctx.user_data.get('admin_change_price_parts', []) if ctx.user_data else []
+        
+        if item_idx < 0 or item_idx >= safe_len(selected_parts):
+            await upd.message.reply_text("❌ Ошибка: товар не найден")
+            return ConversationHandler.END
+        
+        old_price = selected_parts[item_idx].get('price', 0)
+        old_name = selected_parts[item_idx].get('name', 'Товар')
+        selected_parts[item_idx]['price'] = new_price
+        
+        new_total = sum(p.get('price', 0) for p in selected_parts if isinstance(p, dict))
+        delivery_price = get_order(order_num).get('delivery_price', 0)
+        
+        update_order(order_num, final_order=str(selected_parts), total_price=new_total)
+        add_order_change(order_num, MANAGER_ID, 'change_price', f"{old_name}: {old_price}", f"{old_name}: {new_price}", "Изменение цены администратором")
+        audit_log(MANAGER_ID, 'admin_change_price', f"Заказ {order_num}: {old_name} {old_price}->{new_price}", "success")
+        
+        order = get_order(order_num)
+        if order:
+            await ctx.bot.send_message(
+                order.get('user_id'),
+                text=f"✏️ Заказ {order_num} изменён менеджером!\n\n"
+                     f"💰 Изменена цена товара: {old_name}\n"
+                     f"💵 Было: {old_price} руб.\n"
+                     f"💵 Стало: {new_price} руб.\n"
+                     f"💰 Новая сумма: {new_total + delivery_price} руб."
+            )
+        
+        await upd.message.reply_text(
+            f"✅ Цена изменена!\n\n"
+            f"📦 Заказ: {order_num}\n"
+            f"📝 Товар: {old_name}\n"
+            f"💰 {old_price} руб. → {new_price} руб.\n"
+            f"💳 Новая сумма: {new_total + delivery_price} руб.\n\n"
+            f"Клиент получил уведомление."
+        )
+        
+        if ctx.user_data:
+            ctx.user_data.pop('admin_change_price_order', None)
+            ctx.user_data.pop('admin_change_price_parts', None)
+            ctx.user_data.pop('admin_change_price_idx', None)
+        
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в admin_change_price_input: {e}")
+        return ConversationHandler.END
+
+# ========== АДМИН: ВЫБОР ТОВАРА ДЛЯ ИЗМЕНЕНИЯ ЦЕНЫ ==========
+
+@require_manager
+async def admin_select_price_item_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора товара для изменения цены"""
+    try:
+        query = upd.callback_query
+        await query.answer()
+        
+        parts = query.data.split('_')
+        if len(parts) < 6:
+            await query.edit_message_text("❌ Ошибка формата данных")
+            return
+        
+        order_num = parts[4]
+        item_idx = safe_int(parts[5])
+        
+        if ctx.user_data.get('admin_change_price_order') != order_num:
+            await query.edit_message_text("❌ Сессия истекла")
+            return
+        
+        ctx.user_data['admin_change_price_idx'] = item_idx
+        selected_parts = ctx.user_data.get('admin_change_price_parts', [])
+        
+        if item_idx < safe_len(selected_parts) and isinstance(selected_parts[item_idx], dict):
+            part_name = selected_parts[item_idx].get('name', 'Товар')
+            part_price = selected_parts[item_idx].get('price', 0)
+            await query.edit_message_text(
+                f"💰 ИЗМЕНЕНИЕ ЦЕНЫ ТОВАРА\n\n"
+                f"📦 Заказ: {order_num}\n"
+                f"📝 Товар: {part_name}\n"
+                f"💵 Текущая цена: {part_price} руб.\n\n"
+                f"Введите новую цену (целое число, руб.):"
+            )
+            return AdminChangePriceStates.NEW_PRICE
+        else:
+            await query.edit_message_text("❌ Товар не найден")
+            return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в admin_select_price_item_callback: {e}")
+        return ConversationHandler.END
 def main():
     try:
         init_db()
