@@ -1,1363 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Telegram Shop Bot для автозапчастей
-Версия: 21.0.0 - FULLY TESTED
-ВСЕ ФУНКЦИИ РАБОТАЮТ
-"""
-
-import os
-import re
-import sqlite3
-import random
-import string
-import ast
-import logging
-import warnings
-import shutil
-import time
-import html
-import hashlib
-import csv
-import io
-import json
-import asyncio
-from datetime import datetime, timedelta
-from functools import wraps, lru_cache
-from typing import Dict, Optional, List, Tuple, Any
-from collections import defaultdict
-from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
-    ContextTypes, ConversationHandler, filters
-)
-from telegram.warnings import PTBUserWarning
-
-# ========== НАСТРОЙКА ЛОГИРОВАНИЯ ==========
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-warnings.filterwarnings("ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
-
-# ========== КОНСТАНТЫ ==========
-MAX_MESSAGE_LENGTH = 10000
-MAX_PARTS_COUNT = 100
-MAX_CALLBACK_DATA = 200
-MAX_PRICE = 1_000_000
-MIN_PRICE = 1
-MAX_ATTEMPTS = 5
-ATTEMPT_WINDOW = 300
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-MANAGER_ID = int(os.environ.get("MANAGER_ID", 804070528))
-
-DELIVERY_BASE = 500
-DELIVERY_RATE_UP_TO_50 = 25
-DELIVERY_RATE_UP_TO_100 = 35
-DELIVERY_RATE_OVER_100 = 50
-
-MAX_BONUS_SPEND_PERCENT = 20
-MIN_ORDER_FOR_BONUS = 500
-MIN_CASH_PAYMENT = 100
-RESTRICTED_BRANDS = ['ravenol', 'равенол', 'raven0l']
-
-DATA_DIR = os.getenv('DATA_DIR', '/app/data')
-DB_PATH = os.path.join(DATA_DIR, 'shop_bot.db')
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
-
-RATE_LIMIT_SECONDS = 2
-user_last_command = defaultdict(datetime)
-
-user_selections = {}
-admin_remove_sessions = {}
-client_remove_sessions = {}
-admin_status_filter = 'all'
-
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден!")
-
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(BACKUP_DIR, exist_ok=True)
-
-# ========== СОСТОЯНИЯ ==========
-class OrderStates:
-    VIN, MILEAGE, STYLE_CITY, STYLE_HIGHWAY, DELIVERY_TYPE, \
-    ADDRESS, PHONE, PART_NODE, AXLE, PARTS, CONFIRM = range(11)
-
-class GarageStates:
-    VIN, DESCRIPTION = range(20, 22)
-
-class BonusStates:
-    SPEND = 30
-
-class SaveStates:
-    COMMENT = 40
-
-class RemoveStates:
-    COMMENT = 50
-
-class AdminAddItemStates:
-    NAME = 60
-    PRICE = 61
-
-class AdminChangePriceStates:
-    NEW_PRICE = 70
-
-class PaymentStates:
-    WAITING_DOCUMENT = 90
-
-# ========== КЛАВИАТУРЫ ==========
-main_menu = ReplyKeyboardMarkup([
-    ["🛒 Новый заказ", "🚗 Мой гараж"],
-    ["📦 Мои заказы", "🎁 Бонусы"],
-    ["🔗 Рефералы", "🚚 Доставка"],
-    ["ℹ️ Помощь"]
-], resize_keyboard=True)
-
-city_style_kb = ReplyKeyboardMarkup([
-    ["Спокойный (до 60 км/ч)"], ["Умеренный (60-90 км/ч)"],
-    ["Активный (90-120 км/ч)"], ["Спортивный (120+ км/ч)"]
-], resize_keyboard=True)
-
-highway_style_kb = ReplyKeyboardMarkup([
-    ["Спокойный (80-100 км/ч)"], ["Умеренный (100-120 км/ч)"],
-    ["Активный (120-140 км/ч)"], ["Спортивный (140+ км/ч)"]
-], resize_keyboard=True)
-
-delivery_type_kb = ReplyKeyboardMarkup([
-    ["Курьером"], ["Самовывоз"], ["Сторонняя фирма"]
-], resize_keyboard=True)
-
-part_node_kb = ReplyKeyboardMarkup([
-    ["🔧 Двигатель", "🔩 Подвеска"],
-    ["🛑 Тормозная система", "⚙️ Трансмиссия (КПП)"],
-    ["🔋 Электрика", "❄️ Охлаждение"],
-    ["🌡️ Отопление", "💨 Выхлопная система"],
-    ["🛞 Рулевое управление", "📦 Другое"]
-], resize_keyboard=True)
-
-axle_kb = ReplyKeyboardMarkup([
-    ["🔧 Передняя ось"], ["🔧 Задняя ось"], ["🔧 Передняя + Задняя"]
-], resize_keyboard=True)
-
-confirm_order_kb = ReplyKeyboardMarkup([
-    ["✅ Готово", "✏️ Редактировать"]
-], resize_keyboard=True)
-
-pickup_keyboard = InlineKeyboardMarkup([
-    [InlineKeyboardButton("📍 Метро Давыдково", callback_data="pickup_davydkovo")],
-    [InlineKeyboardButton("📍 Метро Южная", callback_data="pickup_yuzhnaya")],
-    [InlineKeyboardButton("📍 Метро Строгино", callback_data="pickup_strogino")]
-])
-
-# ========== СТАТУСЫ ==========
-STATUS_TRANSITIONS = {
-    'pending': ['waiting_selection', 'cancelled'],
-    'waiting_selection': ['waiting_payment', 'cancelled'],
-    'waiting_payment': ['paid', 'cancelled', 'cancelled_by_user'],
-    'paid': ['ordered', 'cancelled', 'refunded'],
-    'ordered': ['arrived', 'cancelled'],
-    'arrived': ['ready', 'cancelled'],
-    'ready': ['shipped', 'issued', 'cancelled'],
-    'shipped': ['delivered', 'cancelled'],
-    'delivered': ['issued', 'cancelled'],
-    'issued': ['cancelled'],
-    'cancelled': [],
-    'cancelled_by_user': [],
-    'refunded': []
-}
-
-STATUS_TEXT_MAP = {
-    'pending': '🆕 Ожидает подбора',
-    'waiting_selection': '🟡 Ожидает выбора запчастей',
-    'waiting_payment': '💰 Ожидает оплаты',
-    'paid': '✅ Оплачен',
-    'ordered': '📦 Заказан у поставщика',
-    'arrived': '📦✅ Товар поступил',
-    'ready': '✅ Готов к выдаче',
-    'shipped': '🚚 Отправлен',
-    'delivered': '🏠 Доставлен',
-    'issued': '📋 Выдан',
-    'cancelled': '❌ Отменён менеджером',
-    'cancelled_by_user': '❌ Отменён пользователем',
-    'refunded': '🔄 Возврат'
-}
-
-ADMIN_STATUS_FILTERS = {
-    'all': 'Все заказы',
-    'pending': '🆕 Ожидает подбора',
-    'waiting_selection': '🟡 Ожидает выбора',
-    'waiting_payment': '💰 Ожидает оплаты',
-    'paid': '✅ Оплачен',
-    'ordered': '📦 Заказан',
-    'arrived': '📦✅ Поступил',
-    'ready': '✅ Готов к выдаче',
-    'shipped': '🚚 Отправлен',
-    'delivered': '🏠 Доставлен',
-    'issued': '📋 Выдан',
-    'cancelled': '❌ Отменён',
-    'cancelled_by_user': '❌ Отменён пользователем',
-    'refunded': '🔄 Возврат'
-}
-
-AXLE_REQUIRED_NODES = ["🔧 Подвеска", "🛑 Тормозная система", "🛞 Рулевое управление"]
-
-STATUS_ICONS = {
-    'Ожидает подбора': '🆕', 'Ожидает выбора': '🟡', 'Ожидает оплаты': '💰',
-    'Оплачен': '✅', 'Заказан': '📦', 'Товар поступил': '📦✅',
-    'Готов к выдаче': '✅', 'Отправлен': '🚚', 'Доставлен': '🏠',
-    'Выдан': '📋', 'Отменён': '❌', 'Возврат': '🔄'
-}
-
-# ========== СТАТУС-БАР ==========
-STATUS_STEPS = [
-    ('pending', '🆕 Заказ создан'),
-    ('waiting_selection', '🟡 Подбор запчастей'),
-    ('waiting_payment', '💰 Ожидает оплаты'),
-    ('paid', '✅ Оплачен'),
-    ('ordered', '📦 Заказан у поставщика'),
-    ('arrived', '📦✅ Товар поступил'),
-    ('ready', '✅ Готов к выдаче'),
-    ('shipped', '🚚 Отправлен'),
-    ('delivered', '🏠 Доставлен'),
-    ('issued', '📋 Выдан')
-]
-
-def get_status_progress(status: str) -> str:
-    """Визуальный статус-бар заказа"""
-    current_idx = 0
-    for i, (s, _) in enumerate(STATUS_STEPS):
-        if s == status:
-            current_idx = i
-            break
-    
-    bar = ""
-    for i, (s, label) in enumerate(STATUS_STEPS):
-        if i < current_idx:
-            bar += "✅ "
-        elif i == current_idx:
-            bar += "🔄 "
-        else:
-            bar += "⬜ "
-    
-    status_text = STATUS_TEXT_MAP.get(status, 'Неизвестен')
-    return f"{bar}\n📌 {status_text}"
-
-# ========== ШАБЛОНЫ ==========
-TEMPLATES = {
-    'status_update': "✅ Статус заказа {order} обновлен: {status}",
-    'delivery_info': "🚚 Заказ {order} отправлен. Трек-номер: {tracking}",
-    'price_change': "💰 Цена на товар {product} изменена: {old} → {new} руб.",
-    'stock_info': "📦 Товар {product} в наличии: {stock} шт.",
-    'payment_confirm': "✅ Оплата заказа {order} подтверждена на сумму {amount} руб.",
-}
-
-# ========== АНТИ-СПАМ ==========
-message_counter = defaultdict(lambda: {'count': 0, 'reset_time': datetime.now()})
-
-async def anti_spam(update: Update) -> bool:
-    """Защита от спама"""
-    if not update or not update.effective_user:
-        return True
-    
-    user_id = update.effective_user.id
-    
-    if datetime.now() - message_counter[user_id]['reset_time'] > timedelta(minutes=1):
-        message_counter[user_id] = {'count': 0, 'reset_time': datetime.now()}
-    
-    message_counter[user_id]['count'] += 1
-    
-    if message_counter[user_id]['count'] > 15:
-        if update.message:
-            await update.message.reply_text("⏳ Слишком много сообщений! Подождите минуту.")
-        return False
-    
-    return True
-
-# ========== БЕЗОПАСНОСТЬ ==========
-class SecurityManager:
-    def __init__(self):
-        self.attempts = defaultdict(lambda: {'count': 0, 'reset_time': datetime.now()})
-        self.manager_2fa = {}
-    
-    def escape_text(self, text: str) -> str:
-        if not text:
-            return ""
-        return html.escape(str(text))
-    
-    def validate_price(self, price: int) -> bool:
-        if not isinstance(price, (int, float)):
-            return False
-        if price < MIN_PRICE or price > MAX_PRICE:
-            return False
-        return True
-    
-    def validate_phone(self, phone: str) -> Tuple[bool, str]:
-        if not phone:
-            return False, "Телефон не может быть пустым"
-        cleaned = re.sub(r'[\s\-\(\)\+]', '', phone)
-        if not cleaned.isdigit():
-            return False, "Телефон должен содержать только цифры"
-        if len(cleaned) < 10:
-            return False, "Слишком короткий номер"
-        if len(cleaned) > 15:
-            return False, "Слишком длинный номер"
-        return True, ""
-    
-    def check_attempts(self, user_id: int) -> Tuple[bool, str]:
-        now = datetime.now()
-        if user_id in self.attempts:
-            if (now - self.attempts[user_id]['reset_time']).seconds > ATTEMPT_WINDOW:
-                self.attempts[user_id] = {'count': 0, 'reset_time': now}
-            if self.attempts[user_id]['count'] >= MAX_ATTEMPTS:
-                return False, f"Слишком много попыток. Подождите {ATTEMPT_WINDOW // 60} минут."
-        self.attempts[user_id]['count'] += 1
-        return True, ""
-    
-    def safe_parse_parts(self, data: str) -> List[Dict]:
-        if not data:
-            return []
-        if data in [None, 'None', '[]', '{}']:
-            return []
-        if len(data) > MAX_MESSAGE_LENGTH:
-            return []
-        try:
-            result = ast.literal_eval(data)
-            if isinstance(result, list):
-                validated = []
-                for item in result:
-                    if isinstance(item, dict):
-                        name = item.get('name', '')
-                        price = item.get('price', 0)
-                        if name and self.validate_price(price):
-                            validated.append({
-                                'name': self.escape_text(name)[:100],
-                                'price': int(price)
-                            })
-                return validated
-            return []
-        except Exception:
-            return []
-
-security = SecurityManager()
-
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def safe_len(obj: Any) -> int:
-    if obj is None:
-        return 0
-    try:
-        return len(obj)
-    except (TypeError, AttributeError):
-        return 0
-
-def safe_int(val: Any, default: int = 0) -> int:
-    if val is None:
-        return default
-    if isinstance(val, bool):
-        return default
-    try:
-        if isinstance(val, str):
-            val = val.strip()
-            if not val:
-                return default
-        return int(float(val))
-    except (ValueError, TypeError):
-        return default
-
-def safe_str(val: Any, default: str = '') -> str:
-    if val is None:
-        return default
-    return str(val)
-
-def check_rate_limit(user_id: int) -> bool:
-    if user_id is None:
-        return True
-    now = datetime.now()
-    if user_id in user_last_command:
-        if (now - user_last_command[user_id]).seconds < RATE_LIMIT_SECONDS:
-            return False
-    user_last_command[user_id] = now
-    return True
-
-def clean_order_number(order_num: str) -> str:
-    if not order_num:
-        return ""
-    match = re.search(r'RVN-[A-Z0-9]{6}', order_num)
-    if match:
-        return match.group(0)
-    return ""
-
-def validate_vin(vin: str) -> bool:
-    if not vin:
-        return False
-    vin = str(vin).upper().strip()
-    if len(vin) != 17:
-        return False
-    if re.search(r'[IOQ]', vin):
-        return False
-    if not vin.isalnum():
-        return False
-    return True
-
-def is_ravenol_product(product_name: str) -> bool:
-    if not product_name:
-        return False
-    product_lower = str(product_name).lower()
-    for brand in RESTRICTED_BRANDS:
-        if brand in product_lower:
-            return True
-    return False
-
-def wrap_text(text: str, max_length: int = 25) -> str:
-    if not text:
-        return ""
-    if len(text) <= max_length:
-        return text
-    words = text.split()
-    lines = []
-    current_line = ""
-    for word in words:
-        if len(current_line) + len(word) + 1 <= max_length:
-            if current_line:
-                current_line += " " + word
-            else:
-                current_line = word
-        else:
-            if current_line:
-                lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
-    return "\n   ".join(lines)
-
-def get_status_icon(status_text: str) -> str:
-    if not status_text:
-        return '📦'
-    for key, icon in STATUS_ICONS.items():
-        if key in status_text:
-            return icon
-    return '📦'
-
-def calc_delivery_price(km: int) -> int:
-    km = safe_int(km)
-    if km <= 0:
-        return DELIVERY_BASE
-    if km <= 50:
-        return DELIVERY_BASE + km * DELIVERY_RATE_UP_TO_50
-    if km <= 100:
-        return DELIVERY_BASE + km * DELIVERY_RATE_UP_TO_100
-    return DELIVERY_BASE + km * DELIVERY_RATE_OVER_100
-
-def extract_city_from_address(address: str) -> str:
-    if not address:
-        return 'Москва'
-    address_lower = address.lower()
-    cities = {
-        'химки': 'Химки', 'мытищи': 'Мытищи', 'люберцы': 'Люберцы',
-        'красногорск': 'Красногорск', 'одинцово': 'Одинцово',
-        'подольск': 'Подольск', 'балашиха': 'Балашиха'
-    }
-    for key, city in cities.items():
-        if key in address_lower:
-            return city
-    return 'Москва'
-
-def extract_distance_from_address(address: str) -> int:
-    if not address:
-        return 30
-    address_lower = address.lower()
-    distances = {
-        'химки': 5, 'мытищи': 8, 'люберцы': 10,
-        'красногорск': 7, 'одинцово': 10, 'подольск': 25, 'балашиха': 15
-    }
-    for key, dist in distances.items():
-        if key in address_lower:
-            return dist
-    return 0 if ('москва' in address_lower or 'мск' in address_lower) else 30
-
-def delivery_discount(order_sum: int) -> int:
-    order_sum = safe_int(order_sum)
-    if order_sum < 10000:
-        return 0
-    steps = (order_sum - 10000) // 5000
-    return min(100, 5 + steps * 5)
-
-# ========== ПАРСЕРЫ ==========
-
-def parse_full_client_text(text: str) -> List[Dict]:
-    """Улучшенный парсер для сложных заказов - распознает ВСЕ товары"""
-    if not text:
-        return []
-    
-    if len(text) > MAX_MESSAGE_LENGTH:
-        return []
-    
-    products = []
-    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
-    
-    i = 0
-    manufacturer = None
-    skip_patterns = ['ПОДБОР ОТПРАВЛЕН', 'Заказ:', 'Клиент:', 'Товаров:', 'Сумма:', 'Товары:', '---', '###']
-    
-    while i < len(lines):
-        line = lines[i]
-        
-        if any(p in line for p in skip_patterns):
-            i += 1
-            continue
-        
-        if 'Производство:' in line:
-            match = re.search(r'Производство[:\s]+([^\n]+)', line, re.I)
-            if match:
-                manufacturer = match.group(1).strip()
-                if products and 'manufacturer' not in products[-1]:
-                    products[-1]['manufacturer'] = manufacturer
-                    manufacturer = None
-            i += 1
-            continue
-        
-        price_match = re.search(r'(\d{1,3}(?:[\s.]?\d{3})*)\s*(?:руб|₽|р\.)', line, re.I)
-        if not price_match:
-            i += 1
-            continue
-        
-        name_part = line[:price_match.start()].strip()
-        name_part = re.sub(r'^\d+\.\s*', '', name_part)
-        name_part = re.sub(r'[=—–-]+$', '', name_part)
-        name_part = re.sub(r'\s+', ' ', name_part).strip()
-        
-        if not name_part or len(name_part) < 3:
-            i += 1
-            continue
-        
-        price_str = price_match.group(1).replace(' ', '').replace('.', '')
-        try:
-            price = int(float(price_str))
-            if not (MIN_PRICE <= price <= MAX_PRICE):
-                i += 1
-                continue
-        except:
-            i += 1
-            continue
-        
-        quantity = 1
-        qty_match = re.search(r'(\d+)\s*шт', line, re.I)
-        if qty_match:
-            quantity = int(qty_match.group(1))
-        
-        product = {
-            'name': name_part[:60],
-            'price': price,
-            'quantity': quantity
-        }
-        
-        country_match = re.search(r'\(([^)]+)\)', name_part)
-        if country_match:
-            country = country_match.group(1).strip()
-            if any(c in country for c in ['Китай', 'Япония', 'KOREA', 'JAPAN', 'CHINA']):
-                product['country'] = country
-        
-        if manufacturer:
-            product['manufacturer'] = manufacturer
-            manufacturer = None
-        
-        is_dup = False
-        for existing in products:
-            if is_same_product(existing, product):
-                is_dup = True
-                break
-        
-        if not is_dup:
-            products.append(product)
-        
-        i += 1
-    
-    return products[:MAX_PARTS_COUNT]
-
-def is_same_product(p1: Dict, p2: Dict) -> bool:
-    """Проверка, являются ли товары одинаковыми"""
-    name1 = re.sub(r'\s*\([^)]*\)\s*$', '', p1.get('name', ''))
-    name2 = re.sub(r'\s*\([^)]*\)\s*$', '', p2.get('name', ''))
-    
-    if name1 != name2:
-        return False
-    
-    if p1.get('price', 0) != p2.get('price', 0):
-        return False
-    
-    if p1.get('quantity', 1) != p2.get('quantity', 1):
-        return False
-    
-    if p1.get('manufacturer') and p2.get('manufacturer'):
-        if p1.get('manufacturer') != p2.get('manufacturer'):
-            return False
-    
-    if p1.get('country') and p2.get('country'):
-        if p1.get('country') != p2.get('country'):
-            return False
-    
-    return True
-
-def parse_manager_text(text: str) -> List[Dict]:
-    """Парсер для текста менеджера с 🎯, /шт, ="""
-    if not text:
-        return []
-    
-    if len(text) > MAX_MESSAGE_LENGTH:
-        return []
-    
-    products = []
-    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
-    
-    grouped = []
-    i = 0
-    while i < len(lines):
-        if i + 1 < len(lines) and ('🎯' in lines[i+1] or 'шт' in lines[i+1] or 'руб' in lines[i+1]):
-            grouped.append(lines[i] + ' ' + lines[i+1])
-            i += 2
-        else:
-            grouped.append(lines[i])
-            i += 1
-    
-    for line in grouped[:MAX_PARTS_COUNT]:
-        if not line:
-            continue
-        
-        line = re.sub(r'^\s*\d+\.\s*', '', line)
-        line = re.sub(r'[🎯💰📦]', '', line)
-        line = re.sub(r'[•–—]', '-', line)
-        line = re.sub(r'\s+', ' ', line).strip()
-        
-        match = re.search(r'=\s*([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
-        if match:
-            price_str = match.group(1).replace(' ', '').replace('.', '').replace(',', '')
-            try:
-                price = float(price_str)
-                if MIN_PRICE <= price <= MAX_PRICE:
-                    name = line[:match.start()].strip()
-                    name = re.sub(r'[=\-•–—]+$', '', name).strip()
-                    name = re.sub(r'\s+', ' ', name)
-                    if name and price:
-                        products.append({'name': name[:60], 'price': int(price)})
-                        continue
-            except:
-                pass
-        
-        match_unit = re.search(r'([\d\s.,]+)\s*(?:руб|₽|р\.)\s*/\s*шт', line, re.I)
-        if match_unit:
-            match_total = re.search(r'=\s*([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
-            if match_total:
-                price_str = match_total.group(1).replace(' ', '').replace('.', '').replace(',', '')
-                try:
-                    price = float(price_str)
-                    if MIN_PRICE <= price <= MAX_PRICE:
-                        name = line[:match_total.start()].strip()
-                        name = re.sub(r'[=\-•–—]+$', '', name).strip()
-                        name = re.sub(r'\s+', ' ', name)
-                        if name and price:
-                            products.append({'name': name[:60], 'price': int(price)})
-                            continue
-                except:
-                    pass
-        
-        match_end = re.search(r'([\d\s.,]+)\s*(?:руб|₽|р\.)', line, re.I)
-        if match_end and '=' not in line:
-            price_str = match_end.group(1).replace(' ', '').replace('.', '').replace(',', '')
-            try:
-                price = float(price_str)
-                if MIN_PRICE <= price <= MAX_PRICE:
-                    name = line[:match_end.start()].strip()
-                    name = re.sub(r'[=\-•–—]+$', '', name).strip()
-                    name = re.sub(r'\s+', ' ', name)
-                    if name and price:
-                        products.append({'name': name[:60], 'price': int(price)})
-                        continue
-            except:
-                pass
-    
-    return products[:MAX_PARTS_COUNT]
-
-def parse_products(text: str) -> List[Dict]:
-    """Стандартный парсер для обратной совместимости"""
-    if not text:
-        return []
-    if len(text) > MAX_MESSAGE_LENGTH:
-        return []
-    
-    products = []
-    lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
-    
-    if len(lines) == 1 and (',' in text or ';' in text):
-        if ',' in text:
-            lines = [l.strip() for l in text.split(',') if l.strip()]
-        else:
-            lines = [l.strip() for l in text.split(';') if l.strip()]
-    
-    for line in lines[:MAX_PARTS_COUNT]:
-        if not line:
-            continue
-        
-        match = re.search(r'(\d{1,3}(?:[\s\.]?\d{3})*)\s*(?:руб|₽|р\.|рублей)', line, re.I)
-        if not match and '=' in line:
-            parts = line.split('=')
-            if len(parts) == 2:
-                name_part = parts[0].strip()
-                price_part = parts[1].strip()
-                price_match = re.search(r'(\d+)', price_part)
-                if price_match:
-                    price = int(price_match.group(1))
-                    if MIN_PRICE <= price <= MAX_PRICE:
-                        name = security.escape_text(name_part[:40])
-                        products.append({'name': name, 'price': price})
-            continue
-        
-        if not match:
-            continue
-        
-        price_str = match.group(1).replace(' ', '').replace('.', '')
-        try:
-            price = float(price_str)
-            if price < MIN_PRICE or price > MAX_PRICE:
-                continue
-        except (ValueError, OverflowError):
-            continue
-        
-        name = line[:match.start()].strip()
-        name = re.sub(r'^[=\-•–—]+|[=\-•–—]+$', '', name).strip()
-        name = re.sub(r'\s+', ' ', name)
-        name = security.escape_text(name[:40])
-        if name and price > 0:
-            products.append({'name': name, 'price': int(price)})
-    
-    return products[:MAX_PARTS_COUNT]
-
-def find_order_number(text: str, reply_text: str = None) -> Optional[str]:
-    """Улучшенный поиск номера заказа"""
-    if reply_text:
-        match = re.search(r'RVN-[A-Z0-9]{6}', reply_text)
-        if match:
-            return match.group(0)
-    
-    match = re.search(r'RVN-[A-Z0-9]{6}', text)
-    if match:
-        return match.group(0)
-    
-    match = re.search(r'Заказ[:\s]+(RVN-[A-Z0-9]{6})', text, re.I)
-    if match:
-        return match.group(1)
-    
-    match = re.search(r'#(RVN-[A-Z0-9]{6})', text)
-    if match:
-        return match.group(1)
-    
-    return None
-
-# ========== БАЗА ДАННЫХ ==========
-def init_db():
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_number TEXT UNIQUE,
-            user_id INTEGER, user_name TEXT, phone TEXT, vin TEXT, mileage TEXT,
-            style_city TEXT, style_highway TEXT, city TEXT,
-            distance INTEGER DEFAULT 0, delivery_type TEXT,
-            delivery_price INTEGER DEFAULT 500, delivery_address TEXT,
-            part_node TEXT, axle TEXT, needed_parts TEXT,
-            selected_products TEXT, final_order TEXT, status TEXT,
-            status_text TEXT, tracking_number TEXT,
-            total_price INTEGER DEFAULT 0, our_cost INTEGER DEFAULT 0,
-            created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS garage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, vin TEXT, description TEXT, comment TEXT, created_at TEXT,
-            UNIQUE(user_id, vin)
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS bonuses (
-            user_id INTEGER PRIMARY KEY,
-            balance INTEGER DEFAULT 0, total_earned INTEGER DEFAULT 0,
-            total_spent INTEGER DEFAULT 0, referrer_id INTEGER DEFAULT NULL
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS bonus_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, order_number TEXT, amount INTEGER,
-            type TEXT, description TEXT, created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS referrals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER, referred_id INTEGER, created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_number TEXT, user_id INTEGER, rating INTEGER,
-            comment TEXT, created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS order_changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_number TEXT,
-            user_id INTEGER,
-            action TEXT,
-            old_value TEXT,
-            new_value TEXT,
-            comment TEXT,
-            created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS payment_documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_number TEXT,
-            file_id TEXT,
-            file_type TEXT,
-            caption TEXT,
-            user_id INTEGER,
-            created_at TEXT,
-            verified INTEGER DEFAULT 0
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            action TEXT,
-            details TEXT,
-            status TEXT,
-            created_at TEXT
-        )''')
-        
-        c.execute('''CREATE TABLE IF NOT EXISTS orders_archive (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_number TEXT,
-            user_id INTEGER, user_name TEXT, phone TEXT, vin TEXT, mileage TEXT,
-            style_city TEXT, style_highway TEXT, city TEXT,
-            distance INTEGER DEFAULT 0, delivery_type TEXT,
-            delivery_price INTEGER DEFAULT 500, delivery_address TEXT,
-            part_node TEXT, axle TEXT, needed_parts TEXT,
-            selected_products TEXT, final_order TEXT, status TEXT,
-            status_text TEXT, tracking_number TEXT,
-            total_price INTEGER DEFAULT 0, our_cost INTEGER DEFAULT 0,
-            created_at TEXT, archived_at TEXT
-        )''')
-        
-        for col in ['phone', 'our_cost', 'tracking_number', 'final_order', 'comment', 'selected_products', 'style_city', 'style_highway']:
-            try:
-                c.execute(f'ALTER TABLE orders ADD COLUMN {col} TEXT')
-            except:
-                pass
-        
-        try:
-            c.execute('ALTER TABLE garage ADD COLUMN comment TEXT')
-        except:
-            pass
-        
-        indexes = [
-            'CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id)',
-            'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)',
-            'CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)',
-            'CREATE INDEX IF NOT EXISTS idx_bonus_history_user_id ON bonus_history(user_id)',
-            'CREATE INDEX IF NOT EXISTS idx_garage_user_id ON garage(user_id)',
-            'CREATE INDEX IF NOT EXISTS idx_orders_order_number ON orders(order_number)',
-            'CREATE INDEX IF NOT EXISTS idx_orders_final_order ON orders(final_order)'
-        ]
-        
-        for idx in indexes:
-            try:
-                c.execute(idx)
-            except Exception as e:
-                logger.error(f"Error creating index: {e}")
-        
-        conn.commit()
-        logger.info(f"База данных инициализирована: {DB_PATH}")
-    except Exception as e:
-        logger.error(f"Ошибка инициализации БД: {e}")
-    finally:
-        if conn:
-            conn.close()
-
-def backup_db():
-    try:
-        if os.path.exists(DB_PATH):
-            backup_name = f"shop_bot_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            backup_path = os.path.join(BACKUP_DIR, backup_name)
-            shutil.copy2(DB_PATH, backup_path)
-            for f in os.listdir(BACKUP_DIR):
-                f_path = os.path.join(BACKUP_DIR, f)
-                if os.path.isfile(f_path):
-                    if datetime.now().timestamp() - os.path.getmtime(f_path) > 7 * 24 * 3600:
-                        os.remove(f_path)
-            logger.info(f"Создан бэкап: {backup_name}")
-    except Exception as e:
-        logger.error(f"Ошибка бэкапа: {e}")
-
-def audit_log(user_id: int, action: str, details: str, status: str = "success"):
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''INSERT INTO audit_log (user_id, action, details, status, created_at)
-                     VALUES (?,?,?,?,?)''',
-                  (user_id, action, details[:500], status, datetime.now().isoformat()))
-        conn.commit()
-        logger.info(f"AUDIT: user={user_id}, action={action}, status={status}")
-    except Exception as e:
-        logger.error(f"Ошибка аудита: {e}")
-    finally:
-        if conn:
-            conn.close()
-
-def generate_unique_order_number() -> str:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        for attempt in range(50):
-            random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            order_num = f"RVN-{random_part}"
-            c.execute('SELECT 1 FROM orders WHERE order_number = ?', (order_num,))
-            if not c.fetchone():
-                logger.info(f"Сгенерирован номер заказа: {order_num}")
-                return order_num
-        order_num = f"RVN-{int(time.time() * 1000) % 1000000:06d}"
-        logger.info(f"Сгенерирован резервный номер: {order_num}")
-        return order_num
-    except Exception as e:
-        logger.error(f"Ошибка генерации номера: {e}")
-        return f"RVN-{int(time.time() * 1000) % 1000000:06d}"
-    finally:
-        if conn:
-            conn.close()
-
-@lru_cache(maxsize=100)
-def get_cached_order(order_number: str) -> Optional[Dict]:
-    return get_order(order_number)
-
-def get_order(order_number: str) -> Optional[Dict]:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return None
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('SELECT * FROM orders WHERE order_number = ?', (order_number,))
-        row = c.fetchone()
-        if not row:
-            return None
-        c.execute('PRAGMA table_info(orders)')
-        columns = [col[1] for col in c.fetchall()]
-        order = {}
-        for i, col in enumerate(columns):
-            if i < safe_len(row):
-                order[col] = row[i]
-            else:
-                order[col] = None
-        for num_field in ['distance', 'delivery_price', 'total_price', 'our_cost', 'user_id']:
-            order[num_field] = safe_int(order.get(num_field))
-        return order
-    except Exception as e:
-        logger.error(f"Ошибка получения заказа: {e}")
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-def update_order(order_number: str, **kwargs) -> bool:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return False
-    
-    allowed = ['phone', 'tracking_number', 'final_order', 'total_price', 
-               'status', 'status_text', 'delivery_type', 'delivery_price',
-               'delivery_address', 'selected_products']
-    
-    safe_kwargs = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
-    if not safe_kwargs:
-        return False
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        
-        if 'status' in safe_kwargs:
-            c.execute('SELECT status FROM orders WHERE order_number = ?', (order_number,))
-            row = c.fetchone()
-            if row:
-                current = row[0] if row[0] else 'pending'
-                new = safe_kwargs['status']
-                allowed_trans = STATUS_TRANSITIONS.get(current, [])
-                if new not in allowed_trans:
-                    logger.warning(f"Недопустимый переход: {current} -> {new}")
-                    return False
-        
-        set_clauses = []
-        params = []
-        for key, val in safe_kwargs.items():
-            set_clauses.append(f"{key} = ?")
-            params.append(val)
-        params.append(order_number)
-        
-        query = f"UPDATE orders SET {', '.join(set_clauses)} WHERE order_number = ?"
-        c.execute(query, params)
-        
-        if 'status' in safe_kwargs and 'status_text' not in safe_kwargs:
-            new_text = STATUS_TEXT_MAP.get(safe_kwargs['status'], 'Неизвестно')
-            c.execute("UPDATE orders SET status_text = ? WHERE order_number = ?", 
-                     (new_text, order_number))
-        
-        conn.commit()
-        logger.info(f"Заказ {order_number} обновлён")
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка обновления заказа: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def save_order(data: Dict) -> Optional[str]:
-    if not data:
-        return None
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        order_num = generate_unique_order_number()
-        if not order_num:
-            return None
-        
-        c.execute('''INSERT INTO orders (
-            order_number, user_id, user_name, phone, vin, mileage,
-            style_city, style_highway, city, distance,
-            delivery_type, delivery_price, delivery_address,
-            part_node, axle, needed_parts,
-            status, status_text, created_at, total_price
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-            (order_num, 
-             data.get('user_id'),
-             security.escape_text(str(data.get('user_name', ''))),
-             security.escape_text(str(data.get('phone', ''))),
-             str(data.get('vin', '')).upper(),
-             str(data.get('mileage', '')),
-             security.escape_text(str(data.get('style_city', ''))),
-             security.escape_text(str(data.get('style_highway', ''))),
-             security.escape_text(str(data.get('city', ''))),
-             data.get('distance', 0),
-             security.escape_text(str(data.get('delivery_type', ''))),
-             data.get('delivery_price', 500),
-             security.escape_text(str(data.get('delivery_address', ''))),
-             security.escape_text(str(data.get('part_node', ''))),
-             security.escape_text(str(data.get('axle', ''))),
-             security.escape_text(str(data.get('needed_parts', ''))),
-             'pending',
-             '🆕 Ожидает подбора',
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             0))
-        
-        conn.commit()
-        logger.info(f"Новый заказ сохранён: {order_num}")
-        return order_num
-    except Exception as e:
-        logger.error(f"Ошибка сохранения заказа: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-def get_user_orders_paginated(user_id: int, page: int = 1, per_page: int = 10) -> Dict:
-    """Пагинированный список заказов"""
-    offset = (page - 1) * per_page
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        
-        c.execute('''
-            SELECT order_number, status_text, created_at, total_price, delivery_price
-            FROM orders 
-            WHERE user_id = ? 
-            ORDER BY id DESC 
-            LIMIT ? OFFSET ?
-        ''', (user_id, per_page, offset))
-        
-        orders = c.fetchall()
-        
-        c.execute('SELECT COUNT(*) FROM orders WHERE user_id = ?', (user_id,))
-        total = c.fetchone()[0]
-        
-        return {
-            'orders': orders,
-            'total': total,
-            'page': page,
-            'per_page': per_page,
-            'total_pages': (total + per_page - 1) // per_page if total > 0 else 1
-        }
-    except Exception as e:
-        logger.error(f"Ошибка получения заказов: {e}")
-        return {'orders': [], 'total': 0, 'page': 1, 'per_page': per_page, 'total_pages': 1}
-    finally:
-        if conn:
-            conn.close()
-
-def get_user_orders(user_id: int) -> List[Tuple]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''SELECT order_number, status_text, created_at, total_price, 
-                            delivery_price, final_order, needed_parts 
-                     FROM orders WHERE user_id = ? ORDER BY id DESC''', (user_id,))
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения заказов: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-def get_all_orders_by_status(status_filter: str = 'all') -> List[Tuple]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        if status_filter == 'all':
-            c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders ORDER BY id DESC')
-        else:
-            c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders WHERE status = ? ORDER BY id DESC', (status_filter,))
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения всех заказов: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-def get_cancelled_orders() -> List[Tuple]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('SELECT order_number, user_name, status_text, created_at, status FROM orders WHERE status IN ("cancelled", "cancelled_by_user") ORDER BY id DESC')
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения отменённых заказов: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-def force_delete_order(order_number: str) -> bool:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return False
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('DELETE FROM orders WHERE order_number = ?', (order_number,))
-        conn.commit()
-        deleted = c.rowcount > 0
-        if deleted:
-            logger.info(f"Заказ {order_number} удалён")
-        return deleted
-    except Exception as e:
-        logger.error(f"Ошибка удаления заказа: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def add_order_change(order_number: str, user_id: int, action: str, 
-                     old_value: str = '', new_value: str = '', comment: str = '') -> bool:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return False
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''INSERT INTO order_changes (order_number, user_id, action, old_value, new_value, comment, created_at)
-                     VALUES (?,?,?,?,?,?,?)''',
-                  (order_number, user_id, action, 
-                   security.escape_text(str(old_value))[:200], 
-                   security.escape_text(str(new_value))[:200], 
-                   security.escape_text(str(comment))[:200], 
-                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка добавления истории: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_order_changes(order_number: str, limit: int = 20) -> List[Tuple]:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return []
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''SELECT action, old_value, new_value, comment, created_at 
-                     FROM order_changes 
-                     WHERE order_number = ? 
-                     ORDER BY created_at DESC 
-                     LIMIT ?''', (order_number, limit))
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения истории: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-def save_payment_document(order_number: str, file_id: str, file_type: str, caption: str, user_id: int) -> bool:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return False
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''INSERT INTO payment_documents (order_number, file_id, file_type, caption, user_id, created_at)
-                     VALUES (?,?,?,?,?,?)''',
-                  (order_number, file_id, file_type, security.escape_text(caption[:500]), user_id,
-                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка сохранения документа: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_payment_documents(order_number: str) -> List[Tuple]:
-    order_number = clean_order_number(order_number)
-    if not order_number:
-        return []
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('''SELECT file_id, file_type, caption, created_at, verified 
-                     FROM payment_documents 
-                     WHERE order_number = ? 
-                     ORDER BY created_at DESC''', (order_number,))
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения документов: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-# ========== ГАРАЖ ==========
-def save_car(user_id: int, vin: str, description: str, comment: str = "") -> bool:
-    if not vin:
-        return False
-    vin = vin.upper().strip()
-    if not validate_vin(vin):
-        return False
-    
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('SELECT 1 FROM garage WHERE user_id = ? AND vin = ?', (user_id, vin))
-        if c.fetchone():
-            return False
-        c.execute('INSERT INTO garage (user_id, vin, description, comment, created_at) VALUES (?,?,?,?,?)',
-                  (user_id, vin, security.escape_text(description[:200]), 
-                   security.escape_text(comment[:100]), 
-                   datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка сохранения автомобиля: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_cars(user_id: int) -> List[Tuple]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('SELECT vin, description, comment, created_at FROM garage WHERE user_id = ? ORDER BY id DESC', (user_id,))
-        return c.fetchall()
-    except Exception as e:
-        logger.error(f"Ошибка получения автомобилей: {e}")
-        return []
-    finally:
-        if conn:
-            conn.close()
-
-def delete_car(user_id: int, vin: str) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('DELETE FROM garage WHERE user_id = ? AND vin = ?', (user_id, vin.upper().strip()))
-        conn.commit()
-        return c.rowcount > 0
-    except Exception as e:
-        logger.error(f"Ошибка удаления автомобиля: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def update_car_comment(user_id: int, vin: str, comment: str) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        c = conn.cursor()
-        c.execute('UPDATE garage SET comment = ? WHERE user_id = ? AND vin = ?', 
-                  (security.escape_text(comment[:100]), user_id, vin.upper().strip()))
-        conn.commit()
-        return c.rowcount > 0
-    except Exception as e:
-        logger.error(f"Ошибка обновления комментария: {e}")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
 # ========== БОНУСЫ ==========
 def get_bonus(user_id: int) -> Dict:
     conn = None
@@ -2421,8 +1061,7 @@ async def main_menu_back(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await start(upd, ctx)
     except Exception as e:
         logger.error(f"Ошибка в main_menu_back: {e}")
-
-# ========== ОПЛАТА ==========
+        # ========== ОПЛАТА ==========
 @require_order_owner
 async def payment_document_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -3581,7 +2220,7 @@ async def spend_bonus_custom_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в spend_bonus_custom_input: {e}")
         return ConversationHandler.END
 
-# ========== КЛИЕНТ УДАЛЯЕТ ТОВАРЫ ==========
+# ========== УДАЛЕНИЕ ТОВАРОВ (КЛИЕНТ) ==========
 @require_order_owner
 async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -3788,7 +2427,7 @@ async def remove_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в remove_comment_input: {e}")
         return ConversationHandler.END
 
-# ========== КЛИЕНТ ОТМЕНЯЕТ ЗАКАЗ ==========
+# ========== ОТМЕНА ЗАКАЗА (КЛИЕНТ) ==========
 @require_order_owner
 async def cancel_by_user_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -3867,7 +2506,7 @@ async def confirm_user_cancel_callback(upd: Update, ctx: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Ошибка в confirm_user_cancel_callback: {e}")
 
-# ========== ОСТАЛЬНЫЕ КОМАНДЫ ==========
+# ========== РЕФЕРАЛЫ, ДОСТАВКА, ПОМОЩЬ ==========
 async def referral_cmd(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         if not upd or not upd.effective_user:
@@ -4265,7 +2904,7 @@ async def send_message_to_client(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в send_message_to_client: {e}")
         await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
-# ========== АДМИН-ПАНЕЛЬ ==========
+# ========== АДМИН ПАНЕЛЬ ==========
 async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
     global admin_status_filter
     try:
@@ -4360,7 +2999,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка answer: {e}")
     
-    # ========== ФИЛЬТРЫ ==========
     if data.startswith("admin_filter_"):
         status = data[13:]
         if status in ADMIN_STATUS_FILTERS:
@@ -4593,7 +3231,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await admin_menu(upd, ctx, query.message)
         return
     
-    # ========== ОСНОВНОЙ ОБРАБОТЧИК ЗАКАЗА ==========
     if data.startswith("admin_order_"):
         match = re.search(r'RVN-[A-Z0-9]{6}', data)
         if match:
@@ -4671,7 +3308,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
         return
     
-    # ========== ОСТАЛЬНЫЕ ОБРАБОТЧИКИ ==========
     if data.startswith("waiting_selection_"):
         order_num = data[18:]
         order_num = clean_order_number(order_num)
@@ -4755,7 +3391,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text[:4000], reply_markup=InlineKeyboardMarkup(kb))
         return
     
-    # ========== АДМИН: РЕДАКТИРОВАНИЕ ТОВАРОВ ==========
     if data.startswith("admin_edit_items_"):
         order_num = data[17:]
         order_num = clean_order_number(order_num)
@@ -5009,7 +3644,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Товар не найден")
         return
     
-    # ========== ДОСТАВКА ==========
     if data.startswith("edit_delivery_"):
         order_num = data[14:]
         order_num = clean_order_number(order_num)
@@ -5047,7 +3681,6 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"✅ Доставка изменена!\n\n{desc}")
         return
     
-    # ========== СТАТУСЫ ==========
     if data.startswith("pay_"):
         order_num = data[4:]
         order_num = clean_order_number(order_num)
@@ -5340,6 +3973,255 @@ async def admin_change_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в admin_change_price_input: {e}")
         return ConversationHandler.END
 
+# ========== ГАРАЖ (ОБРАБОТЧИКИ) ==========
+async def garage_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.effective_user:
+            return
+        
+        if not await anti_spam(upd):
+            return
+        
+        cars = get_cars(upd.effective_user.id)
+        if cars:
+            text = "🚗 **ВАШ ГАРАЖ**\n\n"
+            kb = []
+            for car in cars:
+                if car and len(car) > 0:
+                    vin = str(car[0])
+                    description = str(car[1]) if len(car) > 1 else ""
+                    comment = str(car[2]) if len(car) > 2 else ""
+                    created = str(car[3]) if len(car) > 3 else ""
+                    display = f"🚗 {vin}"
+                    if description:
+                        display += f" ({description[:20]})"
+                    if comment:
+                        display += f" [{comment[:15]}]"
+                    kb.append([InlineKeyboardButton(display, callback_data=f"garage_view_{vin}")])
+                    kb.append([InlineKeyboardButton(f"🗑️ Удалить {vin}", callback_data=f"garage_del_{vin}")])
+            kb.append([InlineKeyboardButton("➕ Добавить автомобиль", callback_data="garage_add")])
+            kb.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")])
+            await upd.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        else:
+            kb = [
+                [InlineKeyboardButton("➕ Добавить автомобиль", callback_data="garage_add")],
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu_back")]
+            ]
+            await upd.message.reply_text("🚗 В вашем гараже пока нет автомобилей.\n\nДобавьте первый автомобиль!", reply_markup=InlineKeyboardMarkup(kb))
+    except Exception as e:
+        logger.error(f"Ошибка в garage_menu: {e}")
+
+async def garage_add_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = upd.callback_query
+        await query.answer()
+        await query.edit_message_text("🔧 Введите VIN номер автомобиля (17 символов):")
+        return GarageStates.VIN
+    except Exception as e:
+        logger.error(f"Ошибка в garage_add_start: {e}")
+        return ConversationHandler.END
+
+async def garage_get_vin(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.message:
+            return GarageStates.VIN
+        vin = upd.message.text.upper().strip()
+        if not validate_vin(vin):
+            await upd.message.reply_text("❌ Неверный VIN. Попробуйте снова:")
+            return GarageStates.VIN
+        ctx.user_data['garage_vin'] = vin
+        await upd.message.reply_text("📝 Введите описание автомобиля (марка, модель, год):")
+        return GarageStates.DESCRIPTION
+    except Exception as e:
+        logger.error(f"Ошибка в garage_get_vin: {e}")
+        return GarageStates.VIN
+
+async def garage_get_description(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.message:
+            return GarageStates.DESCRIPTION
+        description = upd.message.text.strip()
+        vin = ctx.user_data.get('garage_vin') if ctx.user_data else None
+        if not vin:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+            return ConversationHandler.END
+        if save_car(upd.effective_user.id, vin, description, ""):
+            await upd.message.reply_text(f"✅ Автомобиль {vin} сохранён в гараж!")
+        else:
+            await upd.message.reply_text(f"❌ Автомобиль {vin} уже есть в гараже!")
+        if ctx.user_data and 'garage_vin' in ctx.user_data:
+            del ctx.user_data['garage_vin']
+        await garage_menu(upd, ctx)
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в garage_get_description: {e}")
+        return ConversationHandler.END
+
+async def garage_comment_start(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = upd.callback_query
+        await query.answer()
+        vin = query.data[15:]
+        ctx.user_data['garage_comment_vin'] = vin
+        await query.edit_message_text(
+            f"✏️ Введите новый комментарий для автомобиля {vin}:\n\n"
+            f"Максимум 100 символов.\n"
+            f"Или отправьте '-' чтобы удалить комментарий:"
+        )
+        return GarageStates.DESCRIPTION
+    except Exception as e:
+        logger.error(f"Ошибка в garage_comment_start: {e}")
+        return ConversationHandler.END
+
+async def garage_comment_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.message:
+            return GarageStates.DESCRIPTION
+        comment = upd.message.text.strip()
+        if len(comment) > 100:
+            await upd.message.reply_text("❌ Комментарий слишком длинный (максимум 100 символов).")
+            return GarageStates.DESCRIPTION
+        vin = ctx.user_data.get('garage_comment_vin') if ctx.user_data else None
+        if not vin:
+            await upd.message.reply_text("❌ Ошибка. Попробуйте снова.")
+            return ConversationHandler.END
+        if comment == "-":
+            comment = ""
+        if update_car_comment(upd.effective_user.id, vin, comment):
+            await upd.message.reply_text(f"✅ Комментарий для {vin} обновлён!")
+        else:
+            await upd.message.reply_text(f"❌ Ошибка при обновлении комментария")
+        if ctx.user_data and 'garage_comment_vin' in ctx.user_data:
+            del ctx.user_data['garage_comment_vin']
+        await garage_menu(upd, ctx)
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в garage_comment_input: {e}")
+        return ConversationHandler.END
+
+async def garage_back_to_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = upd.callback_query
+        await query.answer()
+        await garage_menu(upd, ctx)
+    except Exception as e:
+        logger.error(f"Ошибка в garage_back_to_menu: {e}")
+
+async def garage_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = upd.callback_query
+        await query.answer()
+        vin = query.data[11:]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Да, удалить", callback_data=f"garage_confirm_del_{vin}")],
+            [InlineKeyboardButton("❌ Нет, отмена", callback_data="garage_back_to_menu")]
+        ])
+        await query.edit_message_text(f"⚠️ Вы уверены, что хотите удалить автомобиль {vin} из гаража?", reply_markup=kb)
+    except Exception as e:
+        logger.error(f"Ошибка в garage_delete: {e}")
+
+async def garage_confirm_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = upd.callback_query
+        await query.answer()
+        vin = query.data[19:]
+        if delete_car(query.from_user.id, vin):
+            await query.edit_message_text(f"✅ Автомобиль {vin} удалён из гаража!")
+        else:
+            await query.edit_message_text(f"❌ Ошибка при удалении {vin}")
+        await garage_menu(upd, ctx)
+    except Exception as e:
+        logger.error(f"Ошибка в garage_confirm_delete: {e}")
+
+# ========== ПОДТВЕРЖДЕНИЕ ОПЛАТЫ (МЕНЕДЖЕР) ==========
+@require_manager
+async def confirm_payment_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.message:
+            return
+        args = ctx.args
+        if not args or len(args) == 0:
+            await upd.message.reply_text("❌ Укажите номер заказа\n\nПример: /confirm_payment RVN-ABCD12")
+            return
+        order_num = clean_order_number(args[0])
+        if not order_num:
+            await upd.message.reply_text("❌ Неверный формат номера заказа")
+            return
+        order = get_order(order_num)
+        if not order:
+            await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+            return
+        if order.get('status') != 'waiting_payment':
+            await upd.message.reply_text(f"❌ Заказ {order_num} не в статусе 'Ожидает оплаты'\nТекущий статус: {order.get('status_text', 'неизвестен')}")
+            return
+        if update_order(order_num, status='paid'):
+            await ctx.bot.send_message(
+                order.get('user_id'),
+                text=f"✅ Оплата заказа {order_num} подтверждена!\n\n"
+                     f"Спасибо за покупку! Ваш заказ передан в обработку."
+            )
+            await upd.message.reply_text(f"✅ Оплата заказа {order_num} подтверждена!\n\nКлиент уведомлён.")
+            final_order = order.get('final_order', '')
+            if final_order and final_order not in [None, 'None', '[]', '{}']:
+                try:
+                    selected_parts = ast.literal_eval(final_order)
+                    if isinstance(selected_parts, list):
+                        bonus_percent = get_bonus_percent(order.get('user_id'))
+                        eligible_for_bonus = 0
+                        for p in selected_parts:
+                            if isinstance(p, dict) and not is_ravenol_product(p.get('name', '')):
+                                eligible_for_bonus += p.get('price', 0)
+                        bonus = int(eligible_for_bonus * bonus_percent / 100)
+                        if bonus > 0:
+                            add_bonus(order.get('user_id'), order_num, bonus, f"Заказ {order_num} ({bonus_percent}% от {eligible_for_bonus} руб.)")
+                            await upd.message.reply_text(f"🎁 Начислено бонусов: {bonus} руб. ({bonus_percent}%)")
+                except Exception as e:
+                    logger.error(f"Ошибка расчёта бонусов: {e}")
+        else:
+            await upd.message.reply_text("❌ Ошибка при обновлении статуса")
+    except Exception as e:
+        logger.error(f"Ошибка в confirm_payment_command: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+# ========== ОБРАБОТКА ОШИБОК ==========
+async def cancel_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        if not upd or not upd.message:
+            return
+        
+        if ctx.user_data:
+            ctx.user_data.clear()
+        
+        await upd.message.reply_text(
+            "❌ Действие отменено.\n\n"
+            "Вы можете начать заново через главное меню.",
+            reply_markup=main_menu
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка в cancel_command: {e}")
+        return ConversationHandler.END
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    error_str = str(context.error)
+    logger.error(f"Исключение: {error_str}")
+    ignore_patterns = [
+        "Message is not modified",
+        "Inline keyboard expected",
+        "Conflict",
+        "Query is too old",
+        "Bot was blocked"
+    ]
+    for pattern in ignore_patterns:
+        if pattern in error_str:
+            logger.info(f"Игнорируемая ошибка: {pattern}")
+            return
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text("⚠️ Произошла ошибка. Попробуйте позже.")
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения об ошибке: {e}")
+
 # ========== ЗАПУСК ==========
 def main():
     try:
@@ -5535,44 +4417,6 @@ def main():
     
     logger.info(f"🤖 Бот запущен! ID менеджера: {MANAGER_ID}")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-async def cancel_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        if not upd or not upd.message:
-            return
-        
-        if ctx.user_data:
-            ctx.user_data.clear()
-        
-        await upd.message.reply_text(
-            "❌ Действие отменено.\n\n"
-            "Вы можете начать заново через главное меню.",
-            reply_markup=main_menu
-        )
-        return ConversationHandler.END
-    except Exception as e:
-        logger.error(f"Ошибка в cancel_command: {e}")
-        return ConversationHandler.END
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    error_str = str(context.error)
-    logger.error(f"Исключение: {error_str}")
-    ignore_patterns = [
-        "Message is not modified",
-        "Inline keyboard expected",
-        "Conflict",
-        "Query is too old",
-        "Bot was blocked"
-    ]
-    for pattern in ignore_patterns:
-        if pattern in error_str:
-            logger.info(f"Игнорируемая ошибка: {pattern}")
-            return
-    if update and update.effective_message:
-        try:
-            await update.effective_message.reply_text("⚠️ Произошла ошибка. Попробуйте позже.")
-        except Exception as e:
-            logger.error(f"Ошибка отправки сообщения об ошибке: {e}")
 
 if __name__ == "__main__":
     main()
