@@ -282,7 +282,9 @@ TEMPLATES = {
     'price_change': "💰 Цена на товар {product} изменена: {old} → {new} руб.",
     'stock_info': "📦 Товар {product} в наличии: {stock} шт.",
     'payment_confirm': "✅ Оплата заказа {order} подтверждена на сумму {amount} руб.",
-}# ========== АНТИ-СПАМ ==========
+}
+
+# ========== АНТИ-СПАМ ==========
 message_counter = defaultdict(lambda: {'count': 0, 'reset_time': datetime.now()})
 
 async def anti_spam(update: Update) -> bool:
@@ -917,7 +919,8 @@ def format_products_for_client(products: List[Dict]) -> str:
     text += "✅ Выберите нужные запчасти (можно отметить несколько):"
     
     return text
-    # ========== БАЗА ДАННЫХ ==========
+
+# ========== БАЗА ДАННЫХ ==========
 def init_db():
     conn = None
     try:
@@ -1468,7 +1471,8 @@ def save_selection_history(order_num: str, products: List[Dict], manager_id: int
     finally:
         if conn:
             conn.close()
-            # ========== ГАРАЖ ==========
+
+# ========== ГАРАЖ ==========
 def save_car(user_id: int, vin: str, description: str, comment: str = "") -> bool:
     if not vin:
         return False
@@ -1823,7 +1827,8 @@ def get_recommendations(user_id: int) -> List[Dict]:
     finally:
         if conn:
             conn.close()
-            # ========== ДЕКОРАТОРЫ ==========
+
+# ========== ДЕКОРАТОРЫ ==========
 def require_manager(func):
     @wraps(func)
     async def wrapper(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
@@ -2438,7 +2443,8 @@ async def confirm_cancel_order_callback(upd: Update, ctx: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error(f"Ошибка в confirm_cancel_order_callback: {e}")
         return ConversationHandler.END
-        # ========== МОИ ЗАКАЗЫ ==========
+
+# ========== МОИ ЗАКАЗЫ ==========
 async def my_orders(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         if not upd or not upd.effective_user:
@@ -2773,7 +2779,8 @@ async def bonus_back_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await bonus_cmd(upd, ctx)
     except Exception as e:
         logger.error(f"Ошибка в bonus_back_callback: {e}")
-        # ========== ОПЛАТА ==========
+
+# ========== ОПЛАТА ==========
 @require_order_owner
 async def payment_document_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
@@ -3258,6 +3265,7 @@ async def finalize_cb(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
             del user_selections[uid][order_num]
     except Exception as e:
         logger.error(f"Ошибка в finalize_cb: {e}")
+
 # ========== АДМИН КОМАНДЫ ==========
 @require_manager
 async def menu_command(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3569,6 +3577,207 @@ async def send_message_to_client(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в send_message_to_client: {e}")
         await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
+# ========== УМНЫЙ ПОИСК ==========
+@require_manager
+async def smart_search(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = ' '.join(ctx.args) if ctx.args else ""
+        if not query:
+            await upd.message.reply_text(
+                "🔍 **УМНЫЙ ПОИСК**\n\n"
+                "Использование: /search ТЕКСТ\n\n"
+                "Ищет по:\n"
+                "• Номеру заказа (RVN-xxxxxx)\n"
+                "• VIN (17 символов)\n"
+                "• Телефону\n"
+                "• Имени клиента\n"
+                "• Артикулу запчасти\n\n"
+                "Пример: /search RVN-ABCD12"
+            )
+            return
+        
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        c = conn.cursor()
+        
+        c.execute('''
+            SELECT order_number, user_name, phone, vin, status_text, total_price, delivery_price, created_at
+            FROM orders
+            WHERE order_number LIKE ? 
+               OR user_name LIKE ?
+               OR phone LIKE ?
+               OR vin LIKE ?
+               OR final_order LIKE ?
+               OR selected_products LIKE ?
+            ORDER BY id DESC
+            LIMIT 20
+        ''', (f'%{query}%', f'%{query}%', f'%{query}%', f'%{query}%', f'%{query}%', f'%{query}%'))
+        
+        results = c.fetchall()
+        conn.close()
+        
+        if not results:
+            await upd.message.reply_text(f"🔍 По запросу «{query}» ничего не найдено")
+            return
+        
+        text = f"🔍 **РЕЗУЛЬТАТЫ ПОИСКА** «{query}»\n\n"
+        for r in results[:10]:
+            total = (r[5] or 0) + (r[6] or 0)
+            text += f"📦 **{r[0]}** | {r[1]}\n"
+            text += f"   📞 {r[2]} | 🚗 {r[3]}\n"
+            text += f"   📦 {r[4]} | 💰 {format_price(total)} руб.\n"
+            text += f"   📅 {r[7][:10] if r[7] else ''}\n\n"
+        
+        await upd.message.reply_text(text[:4000], parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка поиска: {e}")
+        await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
+
+# ========== ШАБЛОНЫ ==========
+@require_manager
+async def quick_template(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    args = ctx.args
+    if len(args) < 2:
+        await upd.message.reply_text(
+            "📝 **ШАБЛОНЫ**\n\n"
+            "Доступные шаблоны:\n"
+            "• `status_update` - обновление статуса\n"
+            "• `delivery_info` - информация о доставке\n"
+            "• `price_change` - изменение цены\n"
+            "• `stock_info` - наличие на складе\n"
+            "• `payment_confirm` - подтверждение оплаты\n\n"
+            "Использование:\n"
+            "/template ШАБЛОН ЗАКАЗ ТЕКСТ\n\n"
+            "Пример:\n"
+            "/template status_update RVN-ABCD12 \"в обработке\""
+        )
+        return
+    
+    template_name = args[0]
+    order_num = args[1] if len(args) > 1 else ""
+    text = ' '.join(args[2:]) if len(args) > 2 else ""
+    
+    if template_name not in TEMPLATES:
+        await upd.message.reply_text(f"❌ Шаблон {template_name} не найден")
+        return
+    
+    order = get_order(order_num)
+    if not order:
+        await upd.message.reply_text(f"❌ Заказ {order_num} не найден")
+        return
+    
+    message = TEMPLATES[template_name].format(
+        order=order_num,
+        status=text or order.get('status_text', ''),
+        tracking=text or order.get('tracking_number', ''),
+        product=text or 'товар',
+        old='',
+        new='',
+        stock=text or '0',
+        amount=text or str(order.get('total_price', 0))
+    )
+    
+    await ctx.bot.send_message(order.get('user_id'), text=message)
+    await upd.message.reply_text(f"✅ Шаблон отправлен клиенту по заказу {order_num}")
+    
+    audit_log(MANAGER_ID, 'quick_template', f"Заказ {order_num}: отправлен шаблон {template_name}", "success")
+
+# ========== ДАШБОРД ==========
+@require_manager
+async def dashboard(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    c = conn.cursor()
+    
+    c.execute('SELECT COUNT(*) FROM orders')
+    total_orders = c.fetchone()[0]
+    
+    c.execute('SELECT COUNT(*) FROM orders WHERE status = "pending"')
+    pending = c.fetchone()[0]
+    
+    c.execute('SELECT COUNT(*) FROM orders WHERE status = "waiting_payment"')
+    waiting_payment = c.fetchone()[0]
+    
+    c.execute('SELECT COUNT(*) FROM orders WHERE status = "paid"')
+    paid = c.fetchone()[0]
+    
+    c.execute('SELECT COUNT(*) FROM orders WHERE status IN ("shipped", "delivered")')
+    shipped = c.fetchone()[0]
+    
+    c.execute('''
+        SELECT COALESCE(SUM(total_price + delivery_price), 0) 
+        FROM orders 
+        WHERE date(created_at) = date('now')
+    ''')
+    today_sum = c.fetchone()[0]
+    
+    c.execute('''
+        SELECT COALESCE(SUM(total_price + delivery_price), 0) 
+        FROM orders 
+        WHERE date(created_at) >= date('now', '-30 days')
+    ''')
+    month_sum = c.fetchone()[0]
+    
+    c.execute('''
+        SELECT user_name, COUNT(*) as orders, SUM(total_price + delivery_price) as total
+        FROM orders 
+        WHERE status NOT IN ('cancelled', 'cancelled_by_user')
+        GROUP BY user_name 
+        ORDER BY total DESC 
+        LIMIT 5
+    ''')
+    top_clients = c.fetchall()
+    
+    conn.close()
+    
+    text = f"📊 **ДАШБОРД**\n\n"
+    text += f"📦 Всего заказов: {total_orders}\n"
+    text += f"🆕 Ожидают подбора: {pending}\n"
+    text += f"💰 Ожидают оплаты: {waiting_payment}\n"
+    text += f"✅ Оплачено: {paid}\n"
+    text += f"🚚 Отправлено/доставлено: {shipped}\n\n"
+    text += f"📈 Сегодня: {format_price(today_sum)} руб.\n"
+    text += f"📈 Месяц: {format_price(month_sum)} руб.\n\n"
+    text += f"🏆 **ТОП КЛИЕНТЫ:**\n"
+    
+    for client in top_clients:
+        text += f"• {client[0]} - {client[1]} заказов ({format_price(client[2])} руб.)\n"
+    
+    await upd.message.reply_text(text, parse_mode='Markdown')
+
+# ========== ЭКСПОРТ ОТЧЕТОВ ==========
+@require_manager
+async def export_report(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await upd.message.reply_text("⏳ Генерация отчета...")
+    
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    c = conn.cursor()
+    
+    c.execute('''
+        SELECT order_number, user_name, phone, vin, total_price, delivery_price, 
+               status_text, created_at, tracking_number
+        FROM orders 
+        ORDER BY id DESC
+    ''')
+    
+    orders = c.fetchall()
+    conn.close()
+    
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(['Номер', 'Клиент', 'Телефон', 'VIN', 'Сумма', 'Доставка', 'Статус', 'Дата', 'Трек-номер'])
+    
+    for o in orders:
+        total = (o[4] or 0) + (o[5] or 0)
+        writer.writerow([
+            o[0], o[1], o[2], o[3] or '', format_price(total), format_price(o[5] or 0), 
+            o[6], o[7][:10] if o[7] else '', o[8] or ''
+        ])
+    
+    await upd.message.reply_document(
+        document=output.getvalue().encode('utf-8-sig'),
+        filename=f"orders_report_{datetime.now().strftime('%Y%m%d')}.csv"
+    )
+    await upd.message.reply_text("✅ Отчет сгенерирован!")
+
 # ========== АДМИН ПАНЕЛЬ ==========
 async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
     global admin_status_filter
@@ -3645,7 +3854,8 @@ async def admin_menu(upd: Update, ctx: ContextTypes.DEFAULT_TYPE, message=None):
         logger.error(f"Ошибка в admin_menu: {e}")
         if upd and upd.message:
             await upd.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
-            # ========== АДМИН CALLBACK ОБРАБОТЧИКИ ==========
+
+# ========== АДМИН CALLBACK ОБРАБОТЧИКИ ==========
 @require_manager
 async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global admin_status_filter
@@ -3899,7 +4109,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         admin_status_filter = 'all'
         await admin_menu(upd, ctx, query.message)
         return
-            # ========== ПРОСМОТР ЗАКАЗА ==========
+    
+    # ========== ПРОСМОТР ЗАКАЗА ==========
     if data.startswith("admin_order_"):
         match = re.search(r'RVN-[A-Z0-9]{6}', data)
         if match:
@@ -4146,7 +4357,8 @@ async def admin_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(f"✅ Заказ {order_num} отменён!")
         return
-            # ========== ИСТОРИЯ ИЗМЕНЕНИЙ ==========
+    
+    # ========== ИСТОРИЯ ИЗМЕНЕНИЙ ==========
     if data.startswith("order_changes_"):
         order_num = data[14:]
         order_num = clean_order_number(order_num)
@@ -4377,7 +4589,8 @@ async def admin_edit_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.error(f"Ошибка в admin_edit_items_callback: {e}")
         await query.edit_message_text(f"❌ Ошибка: {str(e)[:100]}")
-        @require_manager
+
+@require_manager
 async def admin_toggle_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Переключение выбора товара для удаления (админ)"""
     try:
@@ -4633,7 +4846,8 @@ async def admin_add_item_price_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Ошибка в admin_add_item_price_input: {e}")
         return ConversationHandler.END
-        # ========== АДМИН: ИЗМЕНЕНИЕ ЦЕНЫ ==========
+
+# ========== АДМИН: ИЗМЕНЕНИЕ ЦЕНЫ ==========
 @require_manager
 async def admin_select_price_item_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Выбор товара для изменения цены (админ)"""
@@ -4950,7 +5164,8 @@ async def garage_confirm_delete(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await garage_menu(upd, ctx)
     except Exception as e:
         logger.error(f"Ошибка в garage_confirm_delete: {e}")
-        # ========== ОТЗЫВЫ ==========
+
+# ========== ОТЗЫВЫ ==========
 async def feedback_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
         query = upd.callback_query
@@ -5361,7 +5576,8 @@ async def spend_bonus_custom_input(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка в spend_bonus_custom_input: {e}")
         return ConversationHandler.END
-        # ========== УДАЛЕНИЕ ТОВАРОВ (КЛИЕНТ) ==========
+
+# ========== УДАЛЕНИЕ ТОВАРОВ (КЛИЕНТ) ==========
 @require_order_owner
 async def remove_items_callback(upd: Update, ctx: ContextTypes.DEFAULT_TYPE):
     try:
